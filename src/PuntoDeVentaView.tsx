@@ -134,6 +134,10 @@ export default function PuntoDeVentaView({
   // Menu y modal relacionados
   const [showOptionsMenu, setShowOptionsMenu] = useState(false);
   const [menuClosing, setMenuClosing] = useState(false);
+  // Modal DATOS DE FACTURACIÓN
+  const [showDatosFactModal, setShowDatosFactModal] = useState(false);
+  const [caiFactData, setCaiFactData] = useState<any>(null);
+  const [caiFactLoading, setCaiFactLoading] = useState(false);
   // ── Créditos POS ────────────────────────────────────────────────────────────
   const [showCreditoClienteModal, setShowCreditoClienteModal] = useState(false);
   const [showPagoCreditoModal, setShowPagoCreditoModal] = useState(false);
@@ -1231,6 +1235,17 @@ export default function PuntoDeVentaView({
 
   const [facturaActual, setFacturaActual] = useState<string>("");
   const [showPagoModal, setShowPagoModal] = useState(false);
+  // Pedido en proceso de entrega (flujo: Entregado → SAR modal → Pago modal)
+  const [pedidoPendienteEntrega, setPedidoPendienteEntrega] = useState<any>(null);
+
+  // ── Sistema SAR Honduras ─────────────────────────────────────────────────
+  const [showSarModal, setShowSarModal] = useState(false);
+  const [tipoDocumentoFiscal, setTipoDocumentoFiscal] = useState<
+    "FACTURA" | "RECIBO"
+  >("RECIBO");
+  const [rtnCliente, setRtnCliente] = useState("");
+  const [nombreClienteFiscal, setNombreClienteFiscal] = useState("");
+
   /**
    * Guard síncrono contra doble-submit en el flujo de facturación.
    * Se usa useRef (no useState) para que el cambio sea inmediato,
@@ -1629,21 +1644,27 @@ export default function PuntoDeVentaView({
             .from("cai_facturas")
             .select("*")
             .eq("cajero_id", usuarioActual.id)
-            .single();
+            .eq("tipo_comprobante", "RECIBO")
+            .eq("activo", true)
+            .order("creado_en", { ascending: false })
+            .limit(1)
+            .maybeSingle();
 
-          if (caiError || !caiData) {
+          if (caiError) {
             throw new Error(caiError?.message ?? "Sin datos de CAI");
           }
 
-          setCaiInfo({
-            caja_asignada: caiData.caja_asignada,
-            nombre_cajero: usuarioActual.nombre,
-            cai: caiData.cai,
-          });
+          if (caiData) {
+            setCaiInfo({
+              caja_asignada: caiData.caja_asignada,
+              nombre_cajero: usuarioActual.nombre,
+              cai: caiData.cai,
+            });
+          }
 
           // 2. Obtener el SIGUIENTE número libre real via RPC (hace el LOOP
           //    saltando los que ya existen en ventas para este cajero).
-          let facturaParaMostrar: string = caiData.rango_desde;
+          let facturaParaMostrar: string = caiData?.rango_desde ?? "1";
 
           const { data: rpcFactura, error: rpcError } = await supabase.rpc(
             "ver_factura_actual",
@@ -1659,7 +1680,7 @@ export default function PuntoDeVentaView({
           } else {
             // Fallback al campo directo si RPC falla
             facturaParaMostrar =
-              caiData.factura_actual?.trim() || caiData.rango_desde;
+              caiData?.factura_actual?.trim() || caiData?.rango_desde || "1";
             console.warn(
               "⚠ RPC ver_factura_actual falló, usando campo directo:",
               facturaParaMostrar,
@@ -1694,23 +1715,28 @@ export default function PuntoDeVentaView({
           }
 
           // 4. Guardar en cache con el valor correcto
-          await guardarCaiCache({
-            id: caiData.id.toString(),
-            cajero_id: caiData.cajero_id,
-            caja_asignada: caiData.caja_asignada,
-            cai: caiData.cai,
-            factura_desde: caiData.rango_desde,
-            factura_hasta: caiData.rango_hasta,
-            factura_actual:
-              facturaParaMostrar !== "LIMITE_ALCANZADO"
-                ? facturaParaMostrar
-                : caiData.rango_hasta,
-            nombre_cajero: usuarioActual.nombre,
-          });
+          if (caiData) {
+            await guardarCaiCache({
+              id: caiData.id.toString(),
+              cajero_id: caiData.cajero_id,
+              caja_asignada: caiData.caja_asignada,
+              cai: caiData.cai,
+              factura_desde: caiData.rango_desde,
+              factura_hasta: caiData.rango_hasta,
+              factura_actual:
+                facturaParaMostrar !== "LIMITE_ALCANZADO"
+                  ? facturaParaMostrar
+                  : caiData.rango_hasta,
+              nombre_cajero: usuarioActual.nombre,
+            });
+          }
 
           // 5. Mostrar en UI
           if (facturaParaMostrar !== "LIMITE_ALCANZADO") {
-            aplicarFactura(facturaParaMostrar, caiData.rango_hasta);
+            aplicarFactura(
+              facturaParaMostrar,
+              caiData?.rango_hasta ?? "9999999",
+            );
           }
         } catch (err: any) {
           console.error("Error cargando CAI online:", err);
@@ -3322,8 +3348,14 @@ export default function PuntoDeVentaView({
         isOpen={showPagoModal}
         onClose={() => {
           setShowPagoModal(false);
+          setPedidoPendienteEntrega(null);
         }}
-        totalPedido={totalConDescuento}
+        totalPedido={
+          pedidoPendienteEntrega
+            ? Number(pedidoPendienteEntrega.total || 0) +
+              parseFloat(pedidoPendienteEntrega.costo_envio || "0")
+            : totalConDescuento
+        }
         exchangeRate={tasaCambio}
         theme={theme}
         onPagoConfirmado={async (paymentData) => {
@@ -3334,59 +3366,124 @@ export default function PuntoDeVentaView({
           }
           isSubmittingRef.current = true;
 
-          // ── Obtener número de factura ATÓMICAMENTE mediante RPC ────────────────
-          // El RPC usa SELECT...FOR UPDATE garantizando unicidad con múltiples
-          // cajeros trabajando simultáneamente.
+          // ── Obtener número de documento ATÓMICAMENTE mediante RPC ─────────────
+          // FACTURA: llama siguiente_numero_factura_sar (correlativo SAR formateado)
+          // RECIBO : llama obtener_siguiente_factura    (correlativo numérico simple)
           let facturaParaEstaVenta: string;
           let usandoRpc = false;
+          // Datos SAR adicionales para facturacion_sar (solo FACTURA)
+          let sarNumeroSecuencial: number | null = null;
+          let sarFechaLimiteEmision: string | null = null;
+          let sarCaiFactura: string = "";
+          let sarRangoDesde: number | null = null;
+          let sarRangoHasta: number | null = null;
 
           if (isOnline && usuarioActual?.id) {
             try {
-              const { data: facturaRpc, error: rpcError } = await supabase.rpc(
-                "obtener_siguiente_factura",
-                { p_cajero_id: usuarioActual.id },
-              );
-
-              if (
-                !rpcError &&
-                facturaRpc &&
-                facturaRpc !== "LIMITE_ALCANZADO" &&
-                facturaRpc !== null
-              ) {
-                facturaParaEstaVenta = facturaRpc as string;
-                usandoRpc = true;
-                // Actualizar display: el próximo será el actual + 1
-                const siguienteDisplay = (
-                  parseInt(facturaParaEstaVenta) + 1
-                ).toString();
-                setFacturaActual(siguienteDisplay);
-                try {
-                  const caiCacheRpc = await obtenerCaiCache(usuarioActual?.id);
-                  if (caiCacheRpc) {
-                    await guardarCaiCache({
-                      ...caiCacheRpc,
-                      factura_actual: siguienteDisplay,
-                    });
-                  }
-                } catch {
-                  /* non-critical */
-                }
-              } else if (facturaRpc === "LIMITE_ALCANZADO") {
-                setFacturaActual("Límite alcanzado");
-                isSubmittingRef.current = false;
-                alert("¡Se ha alcanzado el límite de facturas para este CAI!");
-                return;
-              } else {
-                console.warn(
-                  "[facturar] RPC devolvió error, usando valor local:",
-                  rpcError,
+              if (tipoDocumentoFiscal === "FACTURA") {
+                // ── Ruta FACTURA: RPC nuevo con correlativo SAR formateado ────────
+                const { data: sarRpc, error: sarError } = await supabase.rpc(
+                  "siguiente_numero_factura_sar",
+                  { p_cajero_id: usuarioActual.id },
                 );
-                facturaParaEstaVenta =
-                  facturaActual &&
-                  Number.isFinite(parseInt(facturaActual)) &&
-                  facturaActual !== "Límite alcanzado"
-                    ? facturaActual
-                    : `OFFLINE-${Date.now()}`;
+                if (!sarError && sarRpc && sarRpc.length > 0) {
+                  const sarRow = sarRpc[0];
+                  facturaParaEstaVenta =
+                    sarRow.numero_factura_formado as string;
+                  sarNumeroSecuencial = sarRow.numero_secuencial as number;
+                  sarFechaLimiteEmision = sarRow.fecha_limite_emision as string;
+                  sarCaiFactura = (sarRow.cai as string) || "";
+                  sarRangoDesde = sarRow.rango_desde as number ?? null;
+                  sarRangoHasta = sarRow.rango_hasta as number ?? null;
+                  usandoRpc = true;
+                  // Actualizar display con el número secuencial puro
+                  const siguienteDisplay = (sarNumeroSecuencial + 1).toString();
+                  setFacturaActual(siguienteDisplay);
+                  try {
+                    const caiCacheRpc = await obtenerCaiCache(
+                      usuarioActual?.id,
+                    );
+                    if (caiCacheRpc) {
+                      await guardarCaiCache({
+                        ...caiCacheRpc,
+                        factura_actual: siguienteDisplay,
+                      });
+                    }
+                  } catch {
+                    /* non-critical */
+                  }
+                } else if (
+                  sarError?.message?.includes("SAR-001") ||
+                  sarError?.message?.includes("SAR-002")
+                ) {
+                  // Errores fiscales críticos: CAI vencido o rango agotado
+                  const msg = sarError.message.includes("SAR-002")
+                    ? "¡El rango de facturas SAR está AGOTADO para este cajero!\nSolicite un nuevo CAI al SAR Honduras."
+                    : "¡No existe CAI activo o vigente para este cajero!\nVerifique la configuración en el módulo CAI.";
+                  alert(msg);
+                  setFacturaActual("Límite alcanzado");
+                  isSubmittingRef.current = false;
+                  return;
+                } else {
+                  console.warn(
+                    "[facturar] SAR RPC devolvió error, usando valor local:",
+                    sarError,
+                  );
+                  facturaParaEstaVenta =
+                    facturaActual && facturaActual !== "Límite alcanzado"
+                      ? facturaActual
+                      : `OFFLINE-${Date.now()}`;
+                }
+              } else {
+                // ── Ruta RECIBO: RPC antiguo, correlativo numérico ────────────────
+                const { data: facturaRpc, error: rpcError } =
+                  await supabase.rpc("obtener_siguiente_factura", {
+                    p_cajero_id: usuarioActual.id,
+                  });
+                if (
+                  !rpcError &&
+                  facturaRpc &&
+                  facturaRpc !== "LIMITE_ALCANZADO" &&
+                  facturaRpc !== null
+                ) {
+                  facturaParaEstaVenta = facturaRpc as string;
+                  usandoRpc = true;
+                  const siguienteDisplay = (
+                    parseInt(facturaParaEstaVenta) + 1
+                  ).toString();
+                  setFacturaActual(siguienteDisplay);
+                  try {
+                    const caiCacheRpc = await obtenerCaiCache(
+                      usuarioActual?.id,
+                    );
+                    if (caiCacheRpc) {
+                      await guardarCaiCache({
+                        ...caiCacheRpc,
+                        factura_actual: siguienteDisplay,
+                      });
+                    }
+                  } catch {
+                    /* non-critical */
+                  }
+                } else if (facturaRpc === "LIMITE_ALCANZADO") {
+                  setFacturaActual("Límite alcanzado");
+                  isSubmittingRef.current = false;
+                  alert(
+                    "¡Se ha alcanzado el límite de facturas para este CAI!",
+                  );
+                  return;
+                } else {
+                  console.warn(
+                    "[facturar] RPC devolvió error, usando valor local:",
+                    rpcError,
+                  );
+                  facturaParaEstaVenta =
+                    facturaActual &&
+                    Number.isFinite(parseInt(facturaActual)) &&
+                    facturaActual !== "Límite alcanzado"
+                      ? facturaActual
+                      : `OFFLINE-${Date.now()}`;
+                }
               }
             } catch (rpcErr) {
               console.error("[facturar] Error al llamar RPC:", rpcErr);
@@ -3405,6 +3502,370 @@ export default function PuntoDeVentaView({
               facturaActual !== "Límite alcanzado"
                 ? facturaActual
                 : `OFFLINE-${Date.now()}`;
+          }
+
+          // ── BIFURCACIÓN DELIVERY: si hay pedido pendiente de entrega, procesarlo y retornar ──
+          if (pedidoPendienteEntrega) {
+            const pd = pedidoPendienteEntrega;
+            try {
+              const pdProductos = (pd.productos || []).map((pp: any) => ({
+                id: pp.id,
+                nombre: pp.nombre,
+                precio: pp.precio,
+                cantidad: pp.cantidad,
+                tipo: pp.tipo || "comida",
+              }));
+              const pdSubTotal = pdProductos.reduce(
+                (sum: number, item: any) => {
+                  if (item.tipo === "comida")
+                    return sum + (item.precio / 1.15) * item.cantidad;
+                  if (item.tipo === "bebida")
+                    return sum + (item.precio / 1.18) * item.cantidad;
+                  return sum + item.precio * item.cantidad;
+                },
+                0,
+              );
+              const pdIsv15 = pdProductos
+                .filter((it: any) => it.tipo === "comida")
+                .reduce(
+                  (s: number, it: any) =>
+                    s + (it.precio - it.precio / 1.15) * it.cantidad,
+                  0,
+                );
+              const pdIsv18 = pdProductos
+                .filter((it: any) => it.tipo === "bebida")
+                .reduce(
+                  (s: number, it: any) =>
+                    s + (it.precio - it.precio / 1.18) * it.cantidad,
+                  0,
+                );
+              const pdCostoEnvio = parseFloat(pd.costo_envio || "0");
+              const pdMontoProductos = Number(pd.total || 0);
+
+              // Pagos desde PagoModal
+              let pdEfectivo = 0,
+                pdTarjeta = 0,
+                pdTransferencia = 0,
+                pdDolares = 0,
+                pdDolaresUsd = 0,
+                pdBanco: string | null = null,
+                pdTarjetaNum: string | null = null,
+                pdAutorizacion: string | null = null,
+                pdRefTransferencia: string | null = null;
+              if (paymentData.pagos && paymentData.pagos.length > 0) {
+                paymentData.pagos.forEach((pg: any) => {
+                  if (pg.tipo === "efectivo") pdEfectivo += pg.monto;
+                  if (pg.tipo === "tarjeta") {
+                    pdTarjeta += pg.monto;
+                    pdBanco = pg.banco || pdBanco;
+                    pdTarjetaNum = pg.tarjeta || pdTarjetaNum;
+                    pdAutorizacion = pg.autorizador || pdAutorizacion;
+                  }
+                  if (pg.tipo === "transferencia") {
+                    pdTransferencia += pg.monto;
+                    pdRefTransferencia = pg.referencia || pdRefTransferencia;
+                  }
+                  if (pg.tipo === "dolares") {
+                    pdDolares += pg.monto;
+                    pdDolaresUsd += pg.usd_monto || 0;
+                  }
+                });
+              } else {
+                pdEfectivo = paymentData.efectivo || 0;
+                pdTarjeta = paymentData.tarjeta || 0;
+                pdTransferencia = paymentData.transferencia || 0;
+              }
+
+              const pdCaiStr =
+                tipoDocumentoFiscal === "FACTURA"
+                  ? sarCaiFactura
+                  : caiInfo?.cai || "";
+
+              const pdVenta = {
+                fecha_hora: formatToHondurasLocal(),
+                cajero: usuarioActual?.nombre || "",
+                cajero_id: usuarioActual?.id || null,
+                caja: pd.caja || caiInfo?.caja_asignada || "",
+                cai: pdCaiStr,
+                factura: facturaParaEstaVenta,
+                cliente: pd.cliente || null,
+                tipo_orden: "DELIVERY",
+                tipo: "CONTADO",
+                operation_id: crypto.randomUUID(),
+                productos: JSON.stringify([
+                  ...pdProductos.map((pp: any) => ({
+                    id: pp.id,
+                    nombre: pp.nombre,
+                    precio: pp.precio,
+                    cantidad: pp.cantidad,
+                    tipo: pp.tipo || "comida",
+                    complementos: pp.complementos ?? [],
+                    piezas: pp.piezas ?? null,
+                  })),
+                  ...(pdCostoEnvio > 0
+                    ? [
+                        {
+                          id: "delivery",
+                          nombre: "Delivery",
+                          precio: pdCostoEnvio,
+                          cantidad: 1,
+                          tipo: "delivery",
+                          complementos: [],
+                          piezas: null,
+                        },
+                      ]
+                    : []),
+                ]),
+                sub_total: pdSubTotal.toFixed(2),
+                isv_15: pdIsv15.toFixed(2),
+                isv_18: pdIsv18.toFixed(2),
+                total: (pdMontoProductos + pdCostoEnvio).toFixed(2),
+                // ── Campos fiscales SAR Honduras ──────────────────────────
+                tipo_documento_fiscal: tipoDocumentoFiscal,
+                rtn_cliente:
+                  tipoDocumentoFiscal === "FACTURA" && rtnCliente.trim()
+                    ? rtnCliente.trim()
+                    : null,
+                nombre_cliente_fiscal:
+                  tipoDocumentoFiscal === "FACTURA"
+                    ? nombreClienteFiscal.trim() ||
+                      pd.cliente ||
+                      "CONSUMIDOR FINAL"
+                    : null,
+                numero_secuencial:
+                  tipoDocumentoFiscal === "FACTURA"
+                    ? sarNumeroSecuencial
+                    : null,
+                fecha_limite_emision_cai:
+                  tipoDocumentoFiscal === "FACTURA"
+                    ? sarFechaLimiteEmision
+                    : null,
+                // ── Pago ─────────────────────────────────────────────────
+                efectivo: pdEfectivo,
+                tarjeta: pdTarjeta,
+                transferencia: pdTransferencia,
+                dolares: pdDolares,
+                dolares_usd: pdDolaresUsd,
+                delivery: pdCostoEnvio,
+                total_recibido: paymentData.totalPaid,
+                cambio: Math.max(
+                  0,
+                  paymentData.totalPaid - (pdMontoProductos + pdCostoEnvio),
+                ),
+                banco: pdBanco,
+                tarjeta_num: pdTarjetaNum,
+                autorizacion: pdAutorizacion,
+                ref_transferencia: pdRefTransferencia,
+              };
+
+              // PASO 1: Guardar en IndexedDB
+              const pdVentaIdLocal = await guardarVentaLocal(pdVenta);
+
+              // PASO 2: Guardar en Supabase (si hay conexión)
+              let pdGuardadoEnSupabase = false;
+              if (isOnline && estaConectado()) {
+                try {
+                  const { error: pdErrVenta } = await supabase
+                    .from("ventas")
+                    .insert([pdVenta]);
+                  if (pdErrVenta) throw pdErrVenta;
+                  pdGuardadoEnSupabase = true;
+                  await eliminarVentaLocal(pdVentaIdLocal);
+                } catch (pdSupabaseErr) {
+                  console.error(
+                    "Error al guardar venta delivery en Supabase:",
+                    pdSupabaseErr,
+                  );
+                }
+              }
+
+              // PASO 3: Registrar costo_delivery
+              try {
+                if (pdCostoEnvio > 0 && isOnline && estaConectado()) {
+                  await supabase
+                    .from("costo_delivery")
+                    .insert([
+                      {
+                        pedido_id:
+                          pd.id && !String(pd.id).startsWith("local-")
+                            ? Number(pd.id)
+                            : null,
+                        monto: pdCostoEnvio,
+                        fecha: pd.fecha || formatToHondurasLocal(),
+                        cliente: pd.cliente || null,
+                        cajero_id: usuarioActual?.id || null,
+                        caja: pd.caja || caiInfo?.caja_asignada || null,
+                        tipo_pago: paymentData.tipoPagoString || null,
+                      },
+                    ]);
+                }
+              } catch (_) {}
+
+              // PASO 4: Eliminar pedido
+              try {
+                if (pd.__localPending && pd.local_id) {
+                  await eliminarEnvioLocal(pd.local_id);
+                } else if (
+                  pd.id &&
+                  !String(pd.id).startsWith("local-") &&
+                  isOnline &&
+                  estaConectado()
+                ) {
+                  await supabase
+                    .from("pedidos_envio")
+                    .delete()
+                    .eq("id", pd.id);
+                }
+              } catch (_) {}
+
+              // PASO 5: Incrementar factura
+              setFacturaActual((prev) => {
+                if (!prev || prev === "Límite alcanzado") return prev;
+                const n = parseInt(prev);
+                return Number.isFinite(n) ? (n + 1).toString() : prev;
+              });
+
+              // PASO 6: Actualizar lista de pedidos
+              setPedidosList((prev) =>
+                prev.filter((x) => {
+                  const currentId = String(x.id || x.local_id || "");
+                  const targetId = String(pd.id || pd.local_id || "");
+                  return currentId !== targetId;
+                }),
+              );
+
+              // PASO 7: Imprimir comprobante
+              try {
+                const pdTotalMostrar =
+                  pdMontoProductos + pdCostoEnvio;
+                const pdIsv15Monto = pdIsv15;
+                const pdIsv18Monto = pdIsv18;
+
+                const pdComprobanteHtml = `
+                  <div style='font-family:monospace; width:80mm; margin:0; padding:8px; background:#fff;'>
+                    <div style='text-align:center; font-size:18px; font-weight:700; margin-bottom:6px;'>${datosNegocio?.nombre_negocio?.toUpperCase() || ""}</div>
+                    <div style='text-align:center; font-size:13px; margin-bottom:3px;'>${datosNegocio?.direccion || ""}</div>
+                    <div style='text-align:center; font-size:13px; margin-bottom:3px;'>RTN: ${datosNegocio?.rtn || ""}</div>
+                    <div style='text-align:center; font-size:13px; margin-bottom:10px;'>TEL: ${datosNegocio?.celular || ""}</div>
+                    ${
+                      tipoDocumentoFiscal === "FACTURA"
+                        ? `
+                    <div style='border-top:3px solid #000; border-bottom:3px solid #000; padding:8px 0; margin-bottom:10px; text-align:center;'>
+                      <div style='font-size:18px; font-weight:900; letter-spacing:2px;'>FACTURA</div>
+                    </div>
+                    <div style='font-size:11px; margin-bottom:3px; word-break:break-all;'><b>CAI:</b> ${sarCaiFactura || caiInfo?.cai || ""}</div>
+                    ${sarRangoDesde !== null && sarRangoHasta !== null ? `<div style='font-size:11px; margin-bottom:3px;'><b>Rango autorizado:</b> ${String(sarRangoDesde).padStart(8,"0")} al ${String(sarRangoHasta).padStart(8,"0")}</div>` : ""}
+                    <div style='font-size:12px; margin-bottom:3px;'><b>No. Factura:</b> ${facturaParaEstaVenta}</div>
+                    <div style='font-size:12px; margin-bottom:10px;'><b>Fecha límite de emisión:</b> ${sarFechaLimiteEmision ? new Date(sarFechaLimiteEmision + "T00:00:00").toLocaleDateString("es-HN", {timeZone:"America/Tegucigalpa"}) : ""}</div>
+                    <div style='border-top:1px dashed #000; margin-bottom:6px;'></div>
+                    <div style='font-size:12px; font-weight:700; margin-bottom:3px;'>CLIENTE:</div>
+                    <div style='font-size:12px; margin-bottom:2px;'>Nombre: ${(nombreClienteFiscal.trim() || pd.cliente || "CONSUMIDOR FINAL").toUpperCase()}</div>
+                    <div style='font-size:12px; margin-bottom:8px;'>RTN: ${rtnCliente || "—"}</div>
+                    <div style='border-top:1px dashed #000; margin-bottom:8px;'></div>
+                    <div style='font-size:12px; margin-bottom:3px;'>Fecha: ${new Date().toLocaleString("es-HN", { timeZone: "America/Tegucigalpa" })}</div>
+                    <div style='font-size:12px; margin-bottom:10px;'>Cajero: ${usuarioActual?.nombre || ""}</div>
+                    `
+                        : `
+                    <div style='border-top:2px solid #000; border-bottom:2px solid #000; padding:6px 0; margin-bottom:10px; text-align:center; font-size:16px; font-weight:700;'>RECIBO DE VENTA</div>
+                    <div style='font-size:13px; margin-bottom:3px;'>Cliente: ${pd.cliente || "S/N"}</div>
+                    <div style='font-size:13px; margin-bottom:3px;'>Factura #: ${facturaParaEstaVenta}</div>
+                    <div style='font-size:13px; margin-bottom:10px;'>Fecha: ${new Date().toLocaleString("es-HN", { timeZone: "America/Tegucigalpa" })}</div>
+                    `
+                    }
+                    <div style='border-top:1px dashed #000; border-bottom:1px dashed #000; padding:6px 0; margin-bottom:10px;'>
+                      <table style='width:100%; font-size:13px; border-collapse:collapse;'>
+                        <thead><tr style='border-bottom:1px solid #000;'>
+                          <th style='text-align:left;'>Cant</th>
+                          <th style='text-align:left;'>Descripción</th>
+                          <th style='text-align:right;'>P.Unit</th>
+                          <th style='text-align:right;'>Total</th>
+                        </tr></thead>
+                        <tbody>
+                          ${pdProductos
+                            .map((it: any) => {
+                              const esGrav = it.tipo === "comida" || it.tipo === "bebida";
+                              const div = it.tipo === "bebida" ? 1.18 : it.tipo === "comida" ? 1.15 : 1;
+                              const pUnit = tipoDocumentoFiscal === "FACTURA" && esGrav ? it.precio / div : it.precio;
+                              const tot = pUnit * it.cantidad;
+                              const etiq = tipoDocumentoFiscal === "FACTURA" && esGrav ? " (Gravado)" : "";
+                              return `<tr><td style='padding:3px 0; vertical-align:top;'>${it.cantidad}</td><td style='padding:3px 0; vertical-align:top;'>${it.nombre}${etiq}</td><td style='text-align:right;padding:3px 0; vertical-align:top;'>L${pUnit.toFixed(2)}</td><td style='text-align:right;padding:3px 0; vertical-align:top;'>L${tot.toFixed(2)}</td></tr>`;
+                            })
+                            .join("")}
+                          ${pdCostoEnvio > 0 ? `<tr><td>1</td><td>Delivery</td><td style='text-align:right;'>L${pdCostoEnvio.toFixed(2)}</td><td style='text-align:right;'>L${pdCostoEnvio.toFixed(2)}</td></tr>` : ""}
+                        </tbody>
+                      </table>
+                    </div>
+                    ${
+                      tipoDocumentoFiscal === "FACTURA"
+                        ? `
+                    <div style='font-size:13px; margin-top:6px; padding-top:4px; border-top:1px solid #000;'>
+                      <div style='display:flex; justify-content:space-between; margin-bottom:3px;'><span>Subtotal:</span><span>L ${pdMontoProductos.toFixed(2)}</span></div>
+                      ${pdIsv15Monto > 0 ? `<div style='display:flex; justify-content:space-between; margin-bottom:3px;'><span>ISV 15%:</span><span>L ${pdIsv15Monto.toFixed(2)}</span></div>` : ""}
+                      ${pdIsv18Monto > 0 ? `<div style='display:flex; justify-content:space-between; margin-bottom:3px;'><span>ISV 18%:</span><span>L ${pdIsv18Monto.toFixed(2)}</span></div>` : ""}
+                      ${pdCostoEnvio > 0 ? `<div style='display:flex; justify-content:space-between; margin-bottom:3px;'><span>Delivery:</span><span>L ${pdCostoEnvio.toFixed(2)}</span></div>` : ""}
+                      <div style='display:flex; justify-content:space-between; font-size:16px; font-weight:700; border-top:1px solid #000; padding-top:5px; margin-top:3px;'><span>TOTAL:</span><span>L ${pdTotalMostrar.toFixed(2)}</span></div>
+                    </div>
+                    `
+                        : `
+                    <div style='font-size:16px; font-weight:700; border-top:1px solid #000; padding-top:6px;'>
+                      <span style='float:left;'>TOTAL:</span>
+                      <span style='float:right;'>L ${pdTotalMostrar.toFixed(2)}</span>
+                      <div style='clear:both;'></div>
+                    </div>
+                    `
+                    }
+                    <div style='text-align:center; margin-top:18px; font-size:14px; font-weight:700; border-top:1px dashed #000; padding-top:10px;'>¡GRACIAS POR SU COMPRA!</div>
+                    ${(() => {
+                      let ph = "<div style='border-top:1px dashed #000; margin-top:10px; padding-top:10px;'>";
+                      ph += "<div style='font-size:14px; font-weight:700; margin-bottom:4px;'>PAGO:</div>";
+                      if (pdEfectivo > 0) ph += `<div style='font-size:13px; display:flex; justify-content:space-between;'><span>Efectivo:</span><span>L ${pdEfectivo.toFixed(2)}</span></div>`;
+                      if (pdTarjeta > 0) ph += `<div style='font-size:13px; display:flex; justify-content:space-between;'><span>Tarjeta:</span><span>L ${pdTarjeta.toFixed(2)}</span></div>`;
+                      if (pdTransferencia > 0) ph += `<div style='font-size:13px; display:flex; justify-content:space-between;'><span>Transferencia:</span><span>L ${pdTransferencia.toFixed(2)}</span></div>`;
+                      if (pdDolares > 0) ph += `<div style='font-size:13px; display:flex; justify-content:space-between;'><span>D\u00f3lares:</span><span>L ${pdDolares.toFixed(2)}</span></div>`;
+                      const pdCambio = Math.max(0, paymentData.totalPaid - (pdMontoProductos + pdCostoEnvio));
+                      if (pdCambio > 0) ph += `<div style='font-size:13px; font-weight:700; display:flex; justify-content:space-between; border-top:1px solid #000; margin-top:4px; padding-top:4px;'><span>CAMBIO:</span><span>L ${pdCambio.toFixed(2)}</span></div>`;
+                      ph += "</div>";
+                      return ph;
+                    })()}
+                  </div>
+                `;
+                const pdPrintWindow = window.open(
+                  "",
+                  "",
+                  "height=800,width=400",
+                );
+                if (pdPrintWindow) {
+                  pdPrintWindow.document.write(
+                    `<html><head><title>Comprobante</title><style>@page{margin:0;size:auto;}body{margin:0;padding:0;}*{-webkit-print-color-adjust:exact;}</style></head><body>${pdComprobanteHtml}</body></html>`,
+                  );
+                  pdPrintWindow.document.close();
+                  pdPrintWindow.onload = () => {
+                    setTimeout(() => {
+                      pdPrintWindow.focus();
+                      pdPrintWindow.print();
+                      pdPrintWindow.close();
+                    }, 400);
+                  };
+                }
+              } catch (printErr) {
+                console.error("Error imprimiendo comprobante delivery:", printErr);
+              }
+
+              const pdMensaje = pdGuardadoEnSupabase
+                ? "✓ Pedido procesado y guardado exitosamente"
+                : "✓ Pedido procesado. Se sincronizará cuando haya conexión";
+              alert(pdMensaje);
+            } catch (pdErr) {
+              console.error("Error procesando entrega de pedido:", pdErr);
+              alert(
+                "Error procesando entrega. Verifique los datos guardados.",
+              );
+            } finally {
+              setPedidoPendienteEntrega(null);
+              setShowPagoModal(false);
+              isSubmittingRef.current = false;
+            }
+            return;
           }
 
           // ── Snapshot inmutable: capturar TODOS los datos del formulario ────────
@@ -3636,7 +4097,7 @@ export default function PuntoDeVentaView({
               pagosHtml +=
                 "<div style='border-top:1px dashed #000; margin-top:10px; padding-top:10px;'>";
               pagosHtml +=
-                "<div style='font-size:15px; font-weight:700; margin-bottom:6px;'>PAGOS RECIBIDOS:</div>";
+                "<div style='font-size:15px; font-weight:700; margin-bottom:6px;'>PAGO:</div>";
 
               if (efectivoTotal > 0) {
                 pagosHtml += "<div style='font-size:14px; margin-bottom:3px;'>";
@@ -3700,6 +4161,30 @@ export default function PuntoDeVentaView({
               pagosHtml += "</div>";
             }
 
+            // ── Pre-cálculo ISV para recibo fiscal SAR ────────────────────────
+            const _base15Fact = snap.seleccionados
+              .filter((p) => p.tipo === "comida")
+              .reduce((s, p) => s + (p.precio / 1.15) * p.cantidad, 0);
+            const _isv15Fact = snap.seleccionados
+              .filter((p) => p.tipo === "comida")
+              .reduce(
+                (s, p) => s + (p.precio - p.precio / 1.15) * p.cantidad,
+                0,
+              );
+            const _base18Fact = snap.seleccionados
+              .filter((p) => p.tipo === "bebida")
+              .reduce((s, p) => s + (p.precio / 1.18) * p.cantidad, 0);
+            const _isv18Fact = snap.seleccionados
+              .filter((p) => p.tipo === "bebida")
+              .reduce(
+                (s, p) => s + (p.precio - p.precio / 1.18) * p.cantidad,
+                0,
+              );
+              const _baseExentaFact = snap.seleccionados
+              .filter((p) => p.tipo !== "comida" && p.tipo !== "bebida")
+              .reduce((s, p) => s + p.precio * p.cantidad, 0);
+            void _baseExentaFact; // reservado para uso futuro
+
             const comprobanteHtml = `
               <div style='font-family:monospace; width:${
                 reciboConfig?.recibo_ancho || 80
@@ -3726,46 +4211,60 @@ export default function PuntoDeVentaView({
                   datosNegocio.celular
                 }</div>
                 
+                ${
+                  tipoDocumentoFiscal === "FACTURA"
+                    ? `
+                <div style='border-top:3px solid #000; border-bottom:3px solid #000; padding:8px 0; margin-bottom:10px; text-align:center;'>
+                  <div style='font-size:18px; font-weight:900; letter-spacing:2px;'>FACTURA</div>
+                </div>
+                <div style='font-size:11px; margin-bottom:3px; word-break:break-all;'><b>CAI:</b> ${sarCaiFactura || caiInfo?.cai || ""}</div>
+                ${sarRangoDesde !== null && sarRangoHasta !== null ? `<div style='font-size:11px; margin-bottom:3px;'><b>Rango autorizado:</b> ${String(sarRangoDesde).padStart(8,"0")} al ${String(sarRangoHasta).padStart(8,"0")}</div>` : ""}
+                <div style='font-size:12px; margin-bottom:3px;'><b>No. Factura:</b> ${facturaParaEstaVenta || snap.facturaActual || ""}</div>
+                <div style='font-size:12px; margin-bottom:10px;'><b>Fecha límite de emisión:</b> ${sarFechaLimiteEmision ? new Date(sarFechaLimiteEmision + "T00:00:00").toLocaleDateString("es-HN", {timeZone:"America/Tegucigalpa"}) : ""}</div>
+                <div style='border-top:1px dashed #000; margin-bottom:8px;'></div>
+                <div style='font-size:12px; font-weight:700; margin-bottom:3px;'>CLIENTE:</div>
+                <div style='font-size:12px; margin-bottom:2px;'>Nombre: ${((nombreClienteFiscal || "").trim() || snap.nombreCliente || "CONSUMIDOR FINAL").toUpperCase()}</div>
+                <div style='font-size:12px; margin-bottom:8px;'>RTN: ${rtnCliente || "—"}</div>
+                <div style='border-top:1px dashed #000; margin-bottom:8px;'></div>
+                <div style='font-size:12px; margin-bottom:3px;'>Fecha: ${new Date().toLocaleString("es-HN", { timeZone: "America/Tegucigalpa" })}</div>
+                <div style='font-size:12px; margin-bottom:10px;'>Cajero: ${usuarioActual?.nombre || caiInfo?.nombre_cajero || ""}</div>
+                `
+                    : `
                 <div style='border-top:2px solid #000; border-bottom:2px solid #000; padding:6px 0; margin-bottom:10px;'>
                   <div style='text-align:center; font-size:16px; font-weight:700;'>RECIBO DE VENTA</div>
                 </div>
-                
-                <!-- Información del Cliente, Factura y Fecha -->
                 <div style='font-size:14px; margin-bottom:3px;'>Cliente: ${snap.nombreCliente}</div>
-                <div style='font-size:14px; margin-bottom:3px;'>Factura: ${
-                  snap.facturaActual || ""
-                }</div>
-                <div style='font-size:14px; margin-bottom:10px;'>Fecha: ${new Date().toLocaleString(
-                  "es-HN",
-                  { timeZone: "America/Tegucigalpa" },
-                )}</div>
+                <div style='font-size:14px; margin-bottom:3px;'>Factura: ${snap.facturaActual || ""}</div>
+                <div style='font-size:14px; margin-bottom:10px;'>Fecha: ${new Date().toLocaleString("es-HN", { timeZone: "America/Tegucigalpa" })}</div>
+                `
+                }
                 
                 <!-- Tabla de Productos -->
                 <div style='border-top:1px dashed #000; border-bottom:1px dashed #000; padding:6px 0; margin-bottom:10px;'>
-                  <table style='width:100%; font-size:14px; border-collapse:collapse;'>
+                  <table style='width:100%; font-size:13px; border-collapse:collapse;'>
                     <thead>
                       <tr style='border-bottom:1px solid #000;'>
-                        <th style='text-align:left; padding:3px 0;'>CANT</th>
-                        <th style='text-align:left; padding:3px 0;'>DESCRIPCIÓN</th>
-                        <th style='text-align:right; padding:3px 0;'>P.UNIT</th>
-                        <th style='text-align:right; padding:3px 0;'>TOTAL</th>
+                        <th style='text-align:left; padding:3px 0;'>Cant</th>
+                        <th style='text-align:left; padding:3px 0;'>Descripción</th>
+                        <th style='text-align:right; padding:3px 0;'>P.Unit</th>
+                        <th style='text-align:right; padding:3px 0;'>Total</th>
                       </tr>
                     </thead>
                     <tbody>
                       ${snap.seleccionados
-                        .map(
-                          (p) =>
-                            `<tr>
-                              <td style='padding:4px 0;'>${p.cantidad}</td>
-                              <td style='padding:4px 0;'>${p.nombre}</td>
-                              <td style='text-align:right; padding:4px 0;'>L${p.precio.toFixed(
-                                2,
-                              )}</td>
-                              <td style='text-align:right; padding:4px 0;'>L${(
-                                p.precio * p.cantidad
-                              ).toFixed(2)}</td>
-                            </tr>`,
-                        )
+                        .map((p) => {
+                          const esGravado = p.tipo === "comida" || p.tipo === "bebida";
+                          const divisor = p.tipo === "bebida" ? 1.18 : p.tipo === "comida" ? 1.15 : 1;
+                          const precioSinIsv = tipoDocumentoFiscal === "FACTURA" && esGravado ? p.precio / divisor : p.precio;
+                          const totalSinIsv = precioSinIsv * p.cantidad;
+                          const etiqueta = tipoDocumentoFiscal === "FACTURA" && esGravado ? ` (Gravado)` : "";
+                          return `<tr>
+                            <td style='padding:4px 0; vertical-align:top;'>${p.cantidad}</td>
+                            <td style='padding:4px 0; vertical-align:top;'>${p.nombre}${etiqueta}</td>
+                            <td style='text-align:right; padding:4px 0; vertical-align:top;'>L${precioSinIsv.toFixed(2)}</td>
+                            <td style='text-align:right; padding:4px 0; vertical-align:top;'>L${totalSinIsv.toFixed(2)}</td>
+                          </tr>`;
+                        })
                         .join("")}
                     </tbody>
                   </table>
@@ -3773,25 +4272,25 @@ export default function PuntoDeVentaView({
                 
                 <!-- Totales -->
                 ${
-                  snap.totalDescuento > 0
+                  tipoDocumentoFiscal === "FACTURA"
                     ? `
-                <div style='font-size:14px; margin-top:6px; padding-top:4px;'>
-                  <span style='float:left;'>Subtotal:</span>
-                  <span style='float:right;'>L ${snap.total.toFixed(2)}</span>
-                  <div style='clear:both;'></div>
+                <div style='font-size:13px; margin-top:6px; padding-top:4px; border-top:1px solid #000;'>
+                  <div style='display:flex; justify-content:space-between; margin-bottom:3px;'><span>Subtotal:</span><span>L ${_base15Fact > 0 || _base18Fact > 0 ? (_base15Fact + _base18Fact).toFixed(2) : snap.total.toFixed(2)}</span></div>
+                  ${_isv15Fact > 0 ? `<div style='display:flex; justify-content:space-between; margin-bottom:3px;'><span>ISV 15%:</span><span>L ${_isv15Fact.toFixed(2)}</span></div>` : ""}
+                  ${_isv18Fact > 0 ? `<div style='display:flex; justify-content:space-between; margin-bottom:3px;'><span>ISV 18%:</span><span>L ${_isv18Fact.toFixed(2)}</span></div>` : ""}
+                  ${snap.totalDescuento > 0 ? `<div style='display:flex; justify-content:space-between; margin-bottom:3px; color:#c00;'><span>Descuento:</span><span>-L ${snap.totalDescuento.toFixed(2)}</span></div>` : ""}
+                  <div style='display:flex; justify-content:space-between; font-size:16px; font-weight:700; border-top:1px solid #000; padding-top:5px; margin-top:3px;'><span>TOTAL:</span><span>L ${snap.totalConDescuento.toFixed(2)}</span></div>
                 </div>
-                <div style='font-size:14px; margin-bottom:4px; color:#c00;'>
-                  <span style='float:left;'>Aplicaste un descuento de:</span>
-                  <span style='float:right;'>-L ${snap.totalDescuento.toFixed(2)}</span>
-                  <div style='clear:both;'></div>
-                </div>`
+                `
+                    : `
+                ${
+                  snap.totalDescuento > 0
+                    ? `<div style='font-size:14px; margin-top:6px; padding-top:4px;'><span style='float:left;'>Subtotal:</span><span style='float:right;'>L ${snap.total.toFixed(2)}</span><div style='clear:both;'></div></div><div style='font-size:14px; margin-bottom:4px; color:#c00;'><span style='float:left;'>Descuento:</span><span style='float:right;'>-L ${snap.totalDescuento.toFixed(2)}</span><div style='clear:both;'></div></div>`
                     : ""
                 }
-                <div style='border-top:1px solid #000; margin-top:6px; padding-top:6px; font-size:17px; font-weight:700;'>
-                  <span style='float:left;'>TOTAL:</span>
-                  <span style='float:right;'>L ${snap.totalConDescuento.toFixed(2)}</span>
-                  <div style='clear:both;'></div>
-                </div>
+                <div style='border-top:1px solid #000; margin-top:6px; padding-top:6px; font-size:17px; font-weight:700;'><span style='float:left;'>TOTAL:</span><span style='float:right;'>L ${snap.totalConDescuento.toFixed(2)}</span><div style='clear:both;'></div></div>
+                `
+                }
                 
                 ${pagosHtml}
                 
@@ -3998,7 +4497,8 @@ export default function PuntoDeVentaView({
                 cajero: usuarioActual?.nombre || "",
                 cajero_id: usuarioActual?.id || null,
                 caja: caiInfo?.caja_asignada || "",
-                cai: caiInfo && caiInfo.cai ? caiInfo.cai : "",
+                cai:
+                  sarCaiFactura || (caiInfo && caiInfo.cai ? caiInfo.cai : ""),
                 factura,
                 cliente: snap.nombreCliente,
                 tipo_orden: snap.tipoOrden,
@@ -4024,6 +4524,26 @@ export default function PuntoDeVentaView({
                     : null,
                 total: snap.totalConDescuento.toFixed(2),
                 es_donacion: esDonacion ? true : null,
+                // ── Campos fiscales SAR Honduras ──────────────────────────────
+                tipo_documento_fiscal: tipoDocumentoFiscal,
+                rtn_cliente:
+                  tipoDocumentoFiscal === "FACTURA" && rtnCliente.trim()
+                    ? rtnCliente.trim()
+                    : null,
+                nombre_cliente_fiscal:
+                  tipoDocumentoFiscal === "FACTURA"
+                    ? nombreClienteFiscal.trim() ||
+                      snap.nombreCliente ||
+                      "CONSUMIDOR FINAL"
+                    : null,
+                numero_secuencial:
+                  tipoDocumentoFiscal === "FACTURA"
+                    ? sarNumeroSecuencial
+                    : null,
+                fecha_limite_emision_cai:
+                  tipoDocumentoFiscal === "FACTURA"
+                    ? sarFechaLimiteEmision
+                    : null,
                 // Campos de pago (fusión con pagosf)
                 ...pagoDataCapturado,
               };
@@ -4269,6 +4789,10 @@ export default function PuntoDeVentaView({
               // independientemente de si la operación fue exitosa o no.
               limpiarSeleccion();
               setNombreCliente("");
+              // Resetear estado SAR para la próxima venta
+              setTipoDocumentoFiscal("RECIBO");
+              setRtnCliente("");
+              setNombreClienteFiscal("");
               isSubmittingRef.current = false;
               console.log(`[facturar] op=${operationId} → finalizado.`);
             }
@@ -5695,7 +6219,7 @@ export default function PuntoDeVentaView({
                   // "Continuar" si tiene el foco, disparando dos veces
                   e.preventDefault();
                   setShowClienteModal(false);
-                  setShowPagoModal(true);
+                  setShowSarModal(true);
                 }
               }}
               style={{
@@ -5726,7 +6250,7 @@ export default function PuntoDeVentaView({
                 onClick={() => {
                   if (nombreCliente.trim()) {
                     setShowClienteModal(false);
-                    setShowPagoModal(true); // <-- CAMBIA ESTO
+                    setShowSarModal(true);
                   }
                 }}
                 style={{
@@ -5741,6 +6265,334 @@ export default function PuntoDeVentaView({
                 disabled={!nombreCliente.trim()}
               >
                 Continuar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal SAR Honduras: selección de tipo de documento fiscal ───────── */}
+      {showSarModal && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            width: "100vw",
+            height: "100vh",
+            background:
+              theme === "lite" ? "rgba(0,0,0,0.3)" : "rgba(0,0,0,0.65)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 10000,
+          }}
+        >
+          <div
+            style={{
+              background: theme === "lite" ? "#fff" : "#1e293b",
+              borderRadius: 20,
+              padding: "32px 36px",
+              minWidth: 360,
+              maxWidth: 480,
+              width: "92%",
+              boxShadow:
+                theme === "lite"
+                  ? "0 20px 60px rgba(0,0,0,0.18)"
+                  : "0 20px 60px rgba(0,0,0,0.6)",
+              border:
+                theme === "lite" ? "1px solid #e2e8f0" : "1px solid #334155",
+              display: "flex",
+              flexDirection: "column",
+              gap: 20,
+            }}
+          >
+            {/* Encabezado */}
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 36, marginBottom: 4 }}>🧾</div>
+              <h3
+                style={{
+                  margin: 0,
+                  fontSize: 22,
+                  fontWeight: 800,
+                  color: theme === "lite" ? "#0f172a" : "#f1f5f9",
+                }}
+              >
+                Tipo de Documento
+              </h3>
+              <p
+                style={{
+                  margin: "6px 0 0 0",
+                  fontSize: 13,
+                  color: theme === "lite" ? "#64748b" : "#94a3b8",
+                }}
+              >
+                SAR Honduras — seleccione cómo se emitirá el comprobante
+              </p>
+            </div>
+
+            {/* Botones principales */}
+            <div style={{ display: "flex", gap: 14 }}>
+              {/* RECIBO */}
+              <button
+                onClick={() => {
+                  setTipoDocumentoFiscal("RECIBO");
+                  setRtnCliente("");
+                  setNombreClienteFiscal("");
+                  setShowSarModal(false);
+                  setShowPagoModal(true);
+                }}
+                style={{
+                  flex: 1,
+                  padding: "18px 10px",
+                  borderRadius: 14,
+                  border:
+                    tipoDocumentoFiscal === "RECIBO"
+                      ? "2.5px solid #1976d2"
+                      : "2px solid #cbd5e1",
+                  background:
+                    theme === "lite"
+                      ? tipoDocumentoFiscal === "RECIBO"
+                        ? "#eff6ff"
+                        : "#f8fafc"
+                      : tipoDocumentoFiscal === "RECIBO"
+                        ? "#1e3a5f"
+                        : "#0f172a",
+                  cursor: "pointer",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  gap: 8,
+                  transition: "all 0.15s",
+                }}
+              >
+                <span style={{ fontSize: 30 }}>🧾</span>
+                <span
+                  style={{
+                    fontWeight: 800,
+                    fontSize: 17,
+                    color: theme === "lite" ? "#1976d2" : "#60a5fa",
+                  }}
+                >
+                  RECIBO
+                </span>
+                <span
+                  style={{
+                    fontSize: 11,
+                    color: theme === "lite" ? "#64748b" : "#94a3b8",
+                    textAlign: "center",
+                    lineHeight: 1.4,
+                  }}
+                >
+                  Sin correlativo SAR
+                </span>
+              </button>
+
+              {/* FACTURA */}
+              <button
+                onClick={() => setTipoDocumentoFiscal("FACTURA")}
+                style={{
+                  flex: 1,
+                  padding: "18px 10px",
+                  borderRadius: 14,
+                  border:
+                    tipoDocumentoFiscal === "FACTURA"
+                      ? "2.5px solid #16a34a"
+                      : "2px solid #cbd5e1",
+                  background:
+                    theme === "lite"
+                      ? tipoDocumentoFiscal === "FACTURA"
+                        ? "#f0fdf4"
+                        : "#f8fafc"
+                      : tipoDocumentoFiscal === "FACTURA"
+                        ? "#14532d"
+                        : "#0f172a",
+                  cursor: "pointer",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  gap: 8,
+                  transition: "all 0.15s",
+                }}
+              >
+                <span style={{ fontSize: 30 }}>🏛️</span>
+                <span
+                  style={{
+                    fontWeight: 800,
+                    fontSize: 17,
+                    color: theme === "lite" ? "#16a34a" : "#4ade80",
+                  }}
+                >
+                  FACTURA
+                </span>
+                <span
+                  style={{
+                    fontSize: 11,
+                    color: theme === "lite" ? "#64748b" : "#94a3b8",
+                    textAlign: "center",
+                    lineHeight: 1.4,
+                  }}
+                >
+                  Con correlativo SAR
+                </span>
+              </button>
+            </div>
+
+            {/* Campos fiscales — solo si eligió FACTURA */}
+            {tipoDocumentoFiscal === "FACTURA" && (
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 12,
+                  padding: "16px",
+                  borderRadius: 12,
+                  background:
+                    theme === "lite" ? "#f0fdf4" : "rgba(20,83,45,0.25)",
+                  border:
+                    theme === "lite"
+                      ? "1px solid #bbf7d0"
+                      : "1px solid #166534",
+                }}
+              >
+                <p
+                  style={{
+                    margin: 0,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: theme === "lite" ? "#166534" : "#4ade80",
+                    textTransform: "uppercase",
+                    letterSpacing: 0.5,
+                  }}
+                >
+                  Datos fiscales del cliente (opcionales)
+                </p>
+
+                {/* RTN */}
+                <div>
+                  <label
+                    style={{
+                      fontSize: 12,
+                      color: theme === "lite" ? "#374151" : "#94a3b8",
+                      fontWeight: 600,
+                    }}
+                  >
+                    RTN del cliente (14 dígitos)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="0000-0000-000000 — dejar vacío si no aplica"
+                    value={rtnCliente}
+                    maxLength={20}
+                    onChange={(e) =>
+                      setRtnCliente(
+                        e.target.value.replace(/[^0-9\-]/g, "").toUpperCase(),
+                      )
+                    }
+                    style={{
+                      display: "block",
+                      marginTop: 4,
+                      width: "100%",
+                      padding: "9px 12px",
+                      borderRadius: 8,
+                      border:
+                        theme === "lite"
+                          ? "1px solid #d1d5db"
+                          : "1px solid #334155",
+                      background: theme === "lite" ? "#fff" : "#0f172a",
+                      color: theme === "lite" ? "#111" : "#f1f5f9",
+                      fontSize: 14,
+                      boxSizing: "border-box",
+                    }}
+                  />
+                </div>
+
+                {/* Nombre fiscal */}
+                <div>
+                  <label
+                    style={{
+                      fontSize: 12,
+                      color: theme === "lite" ? "#374151" : "#94a3b8",
+                      fontWeight: 600,
+                    }}
+                  >
+                    Nombre en la factura
+                  </label>
+                  <input
+                    type="text"
+                    placeholder={nombreCliente || "CONSUMIDOR FINAL"}
+                    value={nombreClienteFiscal}
+                    onChange={(e) =>
+                      setNombreClienteFiscal(e.target.value.toUpperCase())
+                    }
+                    style={{
+                      display: "block",
+                      marginTop: 4,
+                      width: "100%",
+                      padding: "9px 12px",
+                      borderRadius: 8,
+                      border:
+                        theme === "lite"
+                          ? "1px solid #d1d5db"
+                          : "1px solid #334155",
+                      background: theme === "lite" ? "#fff" : "#0f172a",
+                      color: theme === "lite" ? "#111" : "#f1f5f9",
+                      fontSize: 14,
+                      boxSizing: "border-box",
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Botones de acción */}
+            <div style={{ display: "flex", gap: 12, marginTop: 4 }}>
+              <button
+                onClick={() => {
+                  setShowSarModal(false);
+                  setTipoDocumentoFiscal("RECIBO");
+                  setRtnCliente("");
+                  setNombreClienteFiscal("");
+                }}
+                style={{
+                  flex: 1,
+                  padding: "11px 0",
+                  borderRadius: 10,
+                  border: "none",
+                  background: theme === "lite" ? "#e2e8f0" : "#334155",
+                  color: theme === "lite" ? "#374151" : "#cbd5e1",
+                  fontWeight: 700,
+                  fontSize: 15,
+                  cursor: "pointer",
+                }}
+              >
+                ← Atrás
+              </button>
+              <button
+                onClick={() => {
+                  setShowSarModal(false);
+                  setShowPagoModal(true);
+                }}
+                style={{
+                  flex: 2,
+                  padding: "11px 0",
+                  borderRadius: 10,
+                  border: "none",
+                  background:
+                    tipoDocumentoFiscal === "FACTURA" ? "#16a34a" : "#1976d2",
+                  color: "#fff",
+                  fontWeight: 800,
+                  fontSize: 16,
+                  cursor: "pointer",
+                  boxShadow:
+                    tipoDocumentoFiscal === "FACTURA"
+                      ? "0 4px 14px rgba(22,163,74,0.4)"
+                      : "0 4px 14px rgba(25,118,210,0.4)",
+                }}
+              >
+                {tipoDocumentoFiscal === "FACTURA"
+                  ? "🏛️ Continuar con Factura SAR"
+                  : "🧾 Continuar con Recibo"}
               </button>
             </div>
           </div>
@@ -5811,7 +6663,7 @@ export default function PuntoDeVentaView({
                     fontSize: 14,
                   }}
                 >
-                  Ingresa los datos del cliente y tipo de pago
+                  Ingresa los datos del cliente
                 </p>
               </div>
               <button
@@ -5916,65 +6768,6 @@ export default function PuntoDeVentaView({
                   />
                 </div>
 
-                <div style={{ marginBottom: 20 }}>
-                  <label
-                    style={{
-                      display: "block",
-                      fontSize: 14,
-                      fontWeight: 600,
-                      color: theme === "lite" ? "#334155" : "#e2e8f0",
-                      marginBottom: 8,
-                    }}
-                  >
-                    Tipo de pago
-                  </label>
-                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                    {[
-                      { value: "Efectivo", icon: "💵", color: "#10b981" },
-                      { value: "Tarjeta", icon: "💳", color: "#3b82f6" },
-                      { value: "Transferencia", icon: "🏦", color: "#8b5cf6" },
-                    ].map((tipo) => {
-                      const isSelected = envioTipoPago === tipo.value;
-                      return (
-                        <button
-                          key={tipo.value}
-                          onClick={() => setEnvioTipoPago(tipo.value as any)}
-                          style={{
-                            flex: 1,
-                            padding: "12px 16px",
-                            borderRadius: 10,
-                            border: isSelected
-                              ? `3px solid ${tipo.color}`
-                              : theme === "lite"
-                                ? "2px solid #e2e8f0"
-                                : "2px solid #334155",
-                            background: isSelected
-                              ? `${tipo.color}15`
-                              : theme === "lite"
-                                ? "#ffffff"
-                                : "#0f172a",
-                            color: isSelected
-                              ? tipo.color
-                              : theme === "lite"
-                                ? "#64748b"
-                                : "#94a3b8",
-                            fontWeight: isSelected ? 700 : 600,
-                            fontSize: 14,
-                            cursor: "pointer",
-                            transition: "all 0.2s",
-                            display: "flex",
-                            flexDirection: "column",
-                            alignItems: "center",
-                            gap: 4,
-                          }}
-                        >
-                          <span style={{ fontSize: 24 }}>{tipo.icon}</span>
-                          <span>{tipo.value}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
 
                 <div style={{ marginBottom: 16 }}>
                   <label
@@ -7369,384 +8162,15 @@ export default function PuntoDeVentaView({
                                   : "Eliminar"}
                               </button>
                               <button
-                                onClick={async () => {
-                                  if (facturaActual === "Límite alcanzado") {
-                                    alert("Límite de facturas alcanzado");
-                                    return;
-                                  }
-                                  if (
-                                    !confirm(
-                                      "Marcar como entregado y registrar cobro?",
-                                    )
-                                  )
-                                    return;
-                                  setPedidosProcessingId(
-                                    String(
-                                      p.id || p.local_id || `row-${index}`,
-                                    ),
-                                  );
-                                  try {
-                                    // Preparar datos de productos
-                                    const productos = (p.productos || []).map(
-                                      (pp: any) => ({
-                                        id: pp.id,
-                                        nombre: pp.nombre,
-                                        precio: pp.precio,
-                                        cantidad: pp.cantidad,
-                                        tipo: pp.tipo || "comida",
-                                      }),
-                                    );
-
-                                    // Calcular subtotales e impuestos
-                                    const subTotal = productos.reduce(
-                                      (sum: number, item: any) => {
-                                        if (item.tipo === "comida")
-                                          return (
-                                            sum +
-                                            (item.precio / 1.15) * item.cantidad
-                                          );
-                                        if (item.tipo === "bebida")
-                                          return (
-                                            sum +
-                                            (item.precio / 1.18) * item.cantidad
-                                          );
-                                        return (
-                                          sum + item.precio * item.cantidad
-                                        );
-                                      },
-                                      0,
-                                    );
-                                    const isv15 = productos
-                                      .filter((it: any) => it.tipo === "comida")
-                                      .reduce(
-                                        (s: number, it: any) =>
-                                          s +
-                                          (it.precio - it.precio / 1.15) *
-                                            it.cantidad,
-                                        0,
-                                      );
-                                    const isv18 = productos
-                                      .filter((it: any) => it.tipo === "bebida")
-                                      .reduce(
-                                        (s: number, it: any) =>
-                                          s +
-                                          (it.precio - it.precio / 1.18) *
-                                            it.cantidad,
-                                        0,
-                                      );
-
-                                    // Preparar objeto de venta
-                                    const venta = {
-                                      fecha_hora: formatToHondurasLocal(),
-                                      cajero: usuarioActual?.nombre || "",
-                                      cajero_id: usuarioActual?.id || null,
-                                      caja:
-                                        p.caja || caiInfo?.caja_asignada || "",
-                                      cai:
-                                        caiInfo && caiInfo.cai
-                                          ? caiInfo.cai
-                                          : "",
-                                      factura: facturaActual,
-                                      cliente: p.cliente || null,
-                                      tipo_orden: "DELIVERY",
-                                      tipo: "CONTADO",
-                                      operation_id: crypto.randomUUID(),
-                                      productos: JSON.stringify([
-                                        ...productos.map((pp: any) => ({
-                                          id: pp.id,
-                                          nombre: pp.nombre,
-                                          precio: pp.precio,
-                                          cantidad: pp.cantidad,
-                                          tipo: pp.tipo || "comida",
-                                          complementos: pp.complementos ?? [],
-                                          piezas: pp.piezas ?? null,
-                                        })),
-                                        // Agregar línea de delivery si hay costo de envío
-                                        ...(parseFloat(p.costo_envio || "0") > 0
-                                          ? [
-                                              {
-                                                id: "delivery",
-                                                nombre: "Delivery",
-                                                precio: parseFloat(
-                                                  p.costo_envio || "0",
-                                                ),
-                                                cantidad: 1,
-                                                tipo: "delivery",
-                                                complementos: [],
-                                                piezas: null,
-                                              },
-                                            ]
-                                          : []),
-                                      ]),
-                                      sub_total: subTotal.toFixed(2),
-                                      isv_15: isv15.toFixed(2),
-                                      isv_18: isv18.toFixed(2),
-                                      // total incluye costo de envío
-                                      total: (
-                                        Number(p.total || 0) +
-                                        parseFloat(p.costo_envio || "0")
-                                      ).toFixed(2),
-                                    };
-
-                                    // Preparar fila de pagosf (1 sola fila con pago + delivery)
-                                    const tipoPago = (
-                                      p.tipo_pago || "efectivo"
-                                    ).toLowerCase();
-                                    const montoProductos = Number(p.total || 0);
-                                    const costoEnvioValor = parseFloat(
-                                      p.costo_envio || "0",
-                                    );
-
-                                    const pagoFDelivery = {
-                                      factura: facturaActual,
-                                      // El método de pago almacena SOLO el monto de productos.
-                                      // El campo delivery almacena el costo de envío por separado.
-                                      // Al leer (resumen/cierre/dashboard) se suma: método + delivery.
-                                      efectivo:
-                                        tipoPago === "efectivo"
-                                          ? montoProductos
-                                          : 0,
-                                      tarjeta:
-                                        tipoPago === "tarjeta"
-                                          ? montoProductos
-                                          : 0,
-                                      transferencia:
-                                        tipoPago === "transferencia"
-                                          ? montoProductos
-                                          : 0,
-                                      dolares:
-                                        tipoPago === "dolares"
-                                          ? montoProductos
-                                          : 0,
-                                      dolares_usd: 0,
-                                      delivery: costoEnvioValor,
-                                      total_recibido:
-                                        montoProductos + costoEnvioValor,
-                                      cambio: 0,
-                                      banco: null,
-                                      tarjeta_num: null,
-                                      autorizacion: null,
-                                      ref_transferencia: null,
-                                      fecha_hora: formatToHondurasLocal(),
-                                      cajero: usuarioActual?.nombre || null,
-                                      cajero_id: usuarioActual?.id || null,
-                                      cliente: p.cliente || null,
-                                    };
-
-                                    // Fusionar venta + pago en un solo objeto para la tabla ventas
-                                    const ventaDelivery = {
-                                      ...venta,
-                                      efectivo: pagoFDelivery.efectivo,
-                                      tarjeta: pagoFDelivery.tarjeta,
-                                      transferencia:
-                                        pagoFDelivery.transferencia,
-                                      dolares: pagoFDelivery.dolares,
-                                      dolares_usd: pagoFDelivery.dolares_usd,
-                                      delivery: pagoFDelivery.delivery,
-                                      total_recibido:
-                                        pagoFDelivery.total_recibido,
-                                      cambio: pagoFDelivery.cambio,
-                                      banco: pagoFDelivery.banco,
-                                      tarjeta_num: pagoFDelivery.tarjeta_num,
-                                      autorizacion: pagoFDelivery.autorizacion,
-                                      ref_transferencia:
-                                        pagoFDelivery.ref_transferencia,
-                                    };
-
-                                    // PASO 1: Guardar primero en IndexedDB (siempre)
-                                    console.log(
-                                      "💾 Guardando venta delivery en IndexedDB...",
-                                    );
-                                    const ventaIdLocal =
-                                      await guardarVentaLocal(ventaDelivery);
-                                    console.log(
-                                      `✓ Venta delivery guardada en IndexedDB (ID: ${ventaIdLocal})`,
-                                    );
-
-                                    // PASO 2: Si hay conexión, intentar guardar en Supabase
-                                    let guardadoEnSupabase = false;
-                                    if (isOnline && estaConectado()) {
-                                      try {
-                                        console.log(
-                                          "🌐 Intentando guardar venta delivery en Supabase...",
-                                        );
-
-                                        const { error: errVenta } =
-                                          await supabase
-                                            .from("ventas")
-                                            .insert([ventaDelivery]);
-
-                                        if (errVenta) {
-                                          console.error(
-                                            "Error guardando venta delivery en Supabase:",
-                                            errVenta,
-                                          );
-                                          throw errVenta;
-                                        }
-
-                                        console.log(
-                                          "✓ Venta delivery guardada en Supabase exitosamente",
-                                        );
-                                        guardadoEnSupabase = true;
-
-                                        // PASO 3: Si se guardó en Supabase, eliminar de IndexedDB
-                                        await eliminarVentaLocal(ventaIdLocal);
-                                        console.log(
-                                          "✓ Venta delivery eliminada de IndexedDB (sincronizada)",
-                                        );
-                                      } catch (supabaseErr) {
-                                        console.error(
-                                          "Error al guardar venta delivery en Supabase:",
-                                          supabaseErr,
-                                        );
-                                        console.log(
-                                          "⚠ Fallo en Supabase. Datos mantenidos en IndexedDB para sincronización posterior",
-                                        );
-                                        guardadoEnSupabase = false;
-                                      }
-                                    } else {
-                                      console.log(
-                                        "⚠ Sin conexión. Venta delivery guardada en IndexedDB para sincronización posterior",
-                                      );
-                                    }
-
-                                    // PASO 4: Registrar costo_delivery para auditoría
-                                    try {
-                                      if (
-                                        costoEnvioValor > 0 &&
-                                        isOnline &&
-                                        estaConectado()
-                                      ) {
-                                        await supabase
-                                          .from("costo_delivery")
-                                          .insert([
-                                            {
-                                              pedido_id:
-                                                p.id &&
-                                                !String(p.id).startsWith(
-                                                  "local-",
-                                                )
-                                                  ? Number(p.id)
-                                                  : null,
-                                              monto: costoEnvioValor,
-                                              fecha:
-                                                p.fecha ||
-                                                formatToHondurasLocal(),
-                                              cliente: p.cliente || null,
-                                              cajero_id:
-                                                usuarioActual?.id || null,
-                                              caja:
-                                                p.caja ||
-                                                caiInfo?.caja_asignada ||
-                                                null,
-                                              tipo_pago: p.tipo_pago || null,
-                                            },
-                                          ]);
-                                        console.log(
-                                          `✓ Ingreso de delivery L ${costoEnvioValor} guardado en costo_delivery`,
-                                        );
-                                      }
-                                    } catch (deliveryErr) {
-                                      console.error(
-                                        "Error guardando costo_delivery:",
-                                        deliveryErr,
-                                      );
-                                      // No bloqueamos el flujo principal si falla esto
-                                    }
-
-                                    try {
-                                      // Si es un pedido local pendiente, eliminarlo de IndexedDB
-                                      if (p.__localPending && p.local_id) {
-                                        await eliminarEnvioLocal(p.local_id);
-                                        console.log(
-                                          `✓ Pedido local ${p.local_id} eliminado de IndexedDB`,
-                                        );
-                                      }
-                                      // Si es un pedido de Supabase, eliminarlo de allí
-                                      else if (
-                                        p.id &&
-                                        !String(p.id).startsWith("local-")
-                                      ) {
-                                        if (isOnline && estaConectado()) {
-                                          const { error: errDel } =
-                                            await supabase
-                                              .from("pedidos_envio")
-                                              .delete()
-                                              .eq("id", p.id);
-                                          if (errDel) {
-                                            console.error(
-                                              "Error eliminando pedido de Supabase:",
-                                              errDel,
-                                            );
-                                          } else {
-                                            console.log(
-                                              `✓ Pedido ${p.id} eliminado de Supabase`,
-                                            );
-                                          }
-                                        }
-                                      }
-                                    } catch (delErr) {
-                                      console.error(
-                                        "Error al eliminar pedido:",
-                                        delErr,
-                                      );
-                                    }
-
-                                    // PASO 5: Incrementar factura actual
-                                    try {
-                                      setFacturaActual((prev) => {
-                                        if (
-                                          !prev ||
-                                          prev === "Límite alcanzado"
-                                        )
-                                          return prev;
-                                        const n = parseInt(prev);
-                                        return Number.isFinite(n)
-                                          ? (n + 1).toString()
-                                          : prev;
-                                      });
-                                    } catch (err) {
-                                      console.error(
-                                        "Error incrementando factura:",
-                                        err,
-                                      );
-                                    }
-
-                                    // PASO 6: Actualizar lista de pedidos local
-                                    setPedidosList((prev) =>
-                                      prev.filter((x) => {
-                                        // Comparar por ID correcto (puede ser local-X o ID numérico)
-                                        const currentId = String(
-                                          x.id || x.local_id || "",
-                                        );
-                                        const targetId = String(
-                                          p.id || p.local_id || "",
-                                        );
-                                        return currentId !== targetId;
-                                      }),
-                                    );
-
-                                    // Mostrar mensaje de éxito
-                                    const mensaje = guardadoEnSupabase
-                                      ? "✓ Pedido procesado y guardado exitosamente"
-                                      : "✓ Pedido procesado. Se sincronizará cuando haya conexión";
-                                    alert(mensaje);
-                                  } catch (err) {
-                                    console.error(
-                                      "Error procesando entrega y cobro:",
-                                      err,
-                                    );
-                                    alert(
-                                      "Error procesando entrega y cobro. Verifique los datos guardados.",
-                                    );
-                                  } finally {
-                                    setPedidosProcessingId(null);
-                                  }
+                                onClick={() => {
+                                  setPedidoPendienteEntrega(p);
+                                  setTipoDocumentoFiscal("RECIBO");
+                                  setNombreClienteFiscal(p.cliente || "");
+                                  setRtnCliente("");
+                                  setShowPagoModal(false);
+                                  setShowPedidosModal(false);
+                                  setShowSarModal(true);
                                 }}
-                                disabled={
-                                  pedidosProcessingId ===
-                                  String(p.id || p.local_id || `row-${index}`)
-                                }
                                 style={{
                                   background: "#e8f5e9",
                                   color: "#2e7d32",
@@ -7767,10 +8191,7 @@ export default function PuntoDeVentaView({
                                   e.currentTarget.style.color = "#2e7d32";
                                 }}
                               >
-                                {pedidosProcessingId ===
-                                String(p.id || p.local_id || `row-${index}`)
-                                  ? "..."
-                                  : "Entregado y Cobrado"}
+                                Entregado
                               </button>
                               {/* Cambiar método de pago */}
                               <button
@@ -9303,6 +9724,42 @@ export default function PuntoDeVentaView({
                       <div className="btn-desc">Recibir pago de cliente</div>
                     </span>
                   </button>
+                  <button
+                    className="menu-btn"
+                    onClick={async () => {
+                      closeMenuAnimated();
+                      setCaiFactLoading(true);
+                      setCaiFactData(null);
+                      setShowDatosFactModal(true);
+                      try {
+                        const { data, error } = await supabase
+                          .from("cai_facturas")
+                          .select("*")
+                          .eq("cajero_id", usuarioActual?.id)
+                          .eq("tipo_comprobante", "FACTURA")
+                          .eq("activo", true)
+                          .order("id", { ascending: false })
+                          .limit(1)
+                          .maybeSingle();
+                        if (!error) setCaiFactData(data);
+                      } catch {
+                        /* non-critical */
+                      }
+                      setCaiFactLoading(false);
+                    }}
+                    style={{
+                      background: "linear-gradient(135deg, #f0fdf4, #dcfce7)",
+                      color: "#14532d",
+                      border: "1px solid #4ade80",
+                      animationDelay: "420ms",
+                    }}
+                  >
+                    <span className="btn-icon">🏛️</span>
+                    <span>
+                      <div className="btn-label">Datos Facturación</div>
+                      <div className="btn-desc">CAI activo del turno</div>
+                    </span>
+                  </button>
                 </>
               )}
             </div>
@@ -10309,6 +10766,225 @@ export default function PuntoDeVentaView({
         cajeroId={usuarioActual?.id ?? ""}
         theme={theme}
       />
+
+      {/* ── Modal DATOS DE FACTURACIÓN ────────────────────────────────────────── */}
+      {showDatosFactModal && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            width: "100vw",
+            height: "100vh",
+            background: "rgba(0,0,0,0.55)",
+            backdropFilter: "blur(8px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 200000,
+          }}
+          onClick={() => setShowDatosFactModal(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "linear-gradient(160deg, #f0fdf4 0%, #dcfce7 100%)",
+              borderRadius: 20,
+              padding: "20px 20px 18px",
+              minWidth: 300,
+              maxWidth: 480,
+              width: "92%",
+              maxHeight: "80vh",
+              overflowY: "auto",
+              boxShadow:
+                "0 24px 60px rgba(0,0,0,0.2), 0 0 0 1px rgba(74,222,128,0.3)",
+              color: "#111827",
+            }}
+          >
+            {/* Header */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 20,
+              }}
+            >
+              <div>
+                <div
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    letterSpacing: 3,
+                    color: "#16a34a",
+                    textTransform: "uppercase",
+                    marginBottom: 4,
+                  }}
+                >
+                  Configuración Fiscal
+                </div>
+                <div
+                  style={{ fontSize: 20, fontWeight: 900, color: "#14532d" }}
+                >
+                  🏛️ Datos de Facturación
+                </div>
+              </div>
+              <button
+                onClick={() => setShowDatosFactModal(false)}
+                style={{
+                  background: "rgba(74,222,128,0.15)",
+                  border: "1px solid rgba(74,222,128,0.3)",
+                  color: "#16a34a",
+                  borderRadius: 10,
+                  width: 36,
+                  height: 36,
+                  cursor: "pointer",
+                  fontSize: 16,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                ✕
+              </button>
+            </div>
+            <div
+              style={{
+                height: 1,
+                background:
+                  "linear-gradient(90deg, transparent, rgba(74,222,128,0.4), transparent)",
+                marginBottom: 20,
+              }}
+            />
+
+            {caiFactLoading ? (
+              <div
+                style={{
+                  textAlign: "center",
+                  padding: "32px 0",
+                  color: "#16a34a",
+                  fontSize: 15,
+                }}
+              >
+                Cargando datos CAI...
+              </div>
+            ) : !caiFactData ? (
+              <div
+                style={{
+                  textAlign: "center",
+                  padding: "32px 0",
+                  color: "#dc2626",
+                  fontSize: 15,
+                }}
+              >
+                ⚠️ No hay CAI activo de tipo FACTURA asignado a este cajero.
+                <br />
+                <span
+                  style={{
+                    fontSize: 13,
+                    color: "#6b7280",
+                    marginTop: 8,
+                    display: "block",
+                  }}
+                >
+                  Contacte al administrador para configurar el CAI.
+                </span>
+              </div>
+            ) : (
+              <div
+                style={{ display: "flex", flexDirection: "column", gap: 12 }}
+              >
+                {[
+                  { label: "CAI", value: caiFactData.cai, mono: true },
+                  {
+                    label: "No. Factura Actual",
+                    value: caiFactData.factura_actual,
+                  },
+                  { label: "Rango Desde", value: caiFactData.rango_desde },
+                  { label: "Rango Hasta", value: caiFactData.rango_hasta },
+                  {
+                    label: "Fecha Límite Emisión",
+                    value: caiFactData.fecha_limite_emision,
+                  },
+                  {
+                    label: "No. Establecimiento",
+                    value: caiFactData.numero_establecimiento,
+                  },
+                  {
+                    label: "Punto de Emisión",
+                    value: caiFactData.punto_emision,
+                  },
+                  {
+                    label: "Tipo Documento",
+                    value: caiFactData.tipo_documento,
+                  },
+                  {
+                    label: "Tipo Comprobante",
+                    value: caiFactData.tipo_comprobante,
+                  },
+                ]
+                  .filter(
+                    (f) =>
+                      f.value !== undefined &&
+                      f.value !== null &&
+                      f.value !== "",
+                  )
+                  .map((field) => (
+                    <div
+                      key={field.label}
+                      style={{
+                        background: "rgba(255,255,255,0.7)",
+                        borderRadius: 10,
+                        padding: "10px 14px",
+                        border: "1px solid rgba(74,222,128,0.25)",
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 700,
+                          color: "#16a34a",
+                          textTransform: "uppercase",
+                          letterSpacing: 1.5,
+                          marginBottom: 3,
+                        }}
+                      >
+                        {field.label}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 600,
+                          color: "#111827",
+                          fontFamily: field.mono ? "monospace" : "inherit",
+                          wordBreak: "break-all",
+                        }}
+                      >
+                        {String(field.value)}
+                      </div>
+                    </div>
+                  ))}
+                <div
+                  style={{
+                    background: caiFactData.activo
+                      ? "rgba(74,222,128,0.15)"
+                      : "rgba(239,68,68,0.12)",
+                    borderRadius: 10,
+                    padding: "10px 14px",
+                    border: `1px solid ${caiFactData.activo ? "rgba(74,222,128,0.4)" : "rgba(239,68,68,0.3)"}`,
+                    textAlign: "center",
+                    fontWeight: 700,
+                    fontSize: 14,
+                    color: caiFactData.activo ? "#166534" : "#dc2626",
+                  }}
+                >
+                  {caiFactData.activo ? "✅ CAI ACTIVO" : "❌ CAI INACTIVO"}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
