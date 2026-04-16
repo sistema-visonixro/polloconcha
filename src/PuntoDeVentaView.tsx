@@ -3396,22 +3396,9 @@ export default function PuntoDeVentaView({
                   sarRangoDesde = sarRow.rango_desde as number ?? null;
                   sarRangoHasta = sarRow.rango_hasta as number ?? null;
                   usandoRpc = true;
-                  // Actualizar display con el número secuencial puro
-                  const siguienteDisplay = (sarNumeroSecuencial + 1).toString();
-                  setFacturaActual(siguienteDisplay);
-                  try {
-                    const caiCacheRpc = await obtenerCaiCache(
-                      usuarioActual?.id,
-                    );
-                    if (caiCacheRpc) {
-                      await guardarCaiCache({
-                        ...caiCacheRpc,
-                        factura_actual: siguienteDisplay,
-                      });
-                    }
-                  } catch {
-                    /* non-critical */
-                  }
+                  // NOTA: NO se actualiza facturaActual ni el cache aquí.
+                  // facturaActual/cache solo persisten el correlativo de RECIBO.
+                  // El correlativo SAR es atómico: cada RPC devuelve el siguiente correcto.
                 } else if (
                   sarError?.message?.includes("SAR-001") ||
                   sarError?.message?.includes("SAR-002")
@@ -3718,12 +3705,14 @@ export default function PuntoDeVentaView({
                 }
               } catch (_) {}
 
-              // PASO 5: Incrementar factura
-              setFacturaActual((prev) => {
-                if (!prev || prev === "Límite alcanzado") return prev;
-                const n = parseInt(prev);
-                return Number.isFinite(n) ? (n + 1).toString() : prev;
-              });
+              // PASO 5: Incrementar factura (solo para RECIBO; FACTURA usa RPC atómico)
+              if (tipoDocumentoFiscal !== "FACTURA") {
+                setFacturaActual((prev) => {
+                  if (!prev || prev === "Límite alcanzado") return prev;
+                  const n = parseInt(prev);
+                  return Number.isFinite(n) ? (n + 1).toString() : prev;
+                });
+              }
 
               // PASO 6: Actualizar lista de pedidos
               setPedidosList((prev) =>
@@ -4647,21 +4636,24 @@ export default function PuntoDeVentaView({
                               `✓ Venta guardada con factura corregida: ${nuevoNum}`,
                             );
                             guardadoEnSupabase = true;
-                            const siguienteDisplay = (
-                              parseInt(nuevoNum) + 1
-                            ).toString();
-                            setFacturaActual(siguienteDisplay);
-                            try {
-                              const caiC = await obtenerCaiCache(
-                                usuarioActual?.id,
-                              );
-                              if (caiC)
-                                await guardarCaiCache({
-                                  ...caiC,
-                                  factura_actual: siguienteDisplay,
-                                });
-                            } catch {
-                              /* non-critical */
+                            // Solo actualizar estado RECIBO; FACTURA SAR usa RPC atómico
+                            if (tipoDocumentoFiscal !== "FACTURA") {
+                              const siguienteDisplay = (
+                                parseInt(nuevoNum) + 1
+                              ).toString();
+                              setFacturaActual(siguienteDisplay);
+                              try {
+                                const caiC = await obtenerCaiCache(
+                                  usuarioActual?.id,
+                                );
+                                if (caiC)
+                                  await guardarCaiCache({
+                                    ...caiC,
+                                    factura_actual: siguienteDisplay,
+                                  });
+                              } catch {
+                                /* non-critical */
+                              }
                             }
                           } else if (
                             retryErr.code !== "23505" &&
@@ -4728,8 +4720,12 @@ export default function PuntoDeVentaView({
               // en Supabase. Solo actualizamos la UI y el cache offline.
               // Si no se usó el RPC (modo offline/fallback), incrementamos también en Supabase.
               if (
+                // FACTURA SAR: el RPC siguiente_numero_factura_sar ya actualizó
+                // factura_actual atómicamente en Supabase. No tocar facturaActual
+                // (estado de RECIBO) ni el cache de RECIBO.
                 facturaParaEstaVenta &&
-                !facturaParaEstaVenta.startsWith("OFFLINE-")
+                !facturaParaEstaVenta.startsWith("OFFLINE-") &&
+                tipoDocumentoFiscal !== "FACTURA"
               ) {
                 const numUsado = parseInt(facturaParaEstaVenta);
                 if (!Number.isFinite(numUsado)) {
