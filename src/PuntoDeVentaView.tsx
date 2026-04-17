@@ -1236,7 +1236,8 @@ export default function PuntoDeVentaView({
   const [facturaActual, setFacturaActual] = useState<string>("");
   const [showPagoModal, setShowPagoModal] = useState(false);
   // Pedido en proceso de entrega (flujo: Entregado → SAR modal → Pago modal)
-  const [pedidoPendienteEntrega, setPedidoPendienteEntrega] = useState<any>(null);
+  const [pedidoPendienteEntrega, setPedidoPendienteEntrega] =
+    useState<any>(null);
 
   // ── Sistema SAR Honduras ─────────────────────────────────────────────────
   const [showSarModal, setShowSarModal] = useState(false);
@@ -3393,8 +3394,8 @@ export default function PuntoDeVentaView({
                   sarNumeroSecuencial = sarRow.numero_secuencial as number;
                   sarFechaLimiteEmision = sarRow.fecha_limite_emision as string;
                   sarCaiFactura = (sarRow.cai as string) || "";
-                  sarRangoDesde = sarRow.rango_desde as number ?? null;
-                  sarRangoHasta = sarRow.rango_hasta as number ?? null;
+                  sarRangoDesde = (sarRow.rango_desde as number) ?? null;
+                  sarRangoHasta = (sarRow.rango_hasta as number) ?? null;
                   usandoRpc = true;
                   // NOTA: NO se actualiza facturaActual ni el cache aquí.
                   // facturaActual/cache solo persisten el correlativo de RECIBO.
@@ -3563,6 +3564,32 @@ export default function PuntoDeVentaView({
                 pdTransferencia = paymentData.transferencia || 0;
               }
 
+              // CORRECCIÓN DELIVERY: las columnas de método deben guardar SOLO
+              // el monto de productos. El delivery se guarda aparte en la columna
+              // `delivery` y el código de lectura (resumen/reportes) lo vuelve a
+              // sumar al método activo. Si no lo descontamos aquí queda duplicado.
+              // Ejemplo: productos=75, delivery=114 → PagoModal cobra 189 en
+              // transferencia. Sin corrección se guarda transferencia=189 + delivery=114
+              // y al leer se suma → 303 (inflado). Con corrección: transferencia=75.
+              if (pdCostoEnvio > 0) {
+                let dvRestante = pdCostoEnvio;
+                // Descontar del delivery el monto absorbido en cada método (orden: efectivo → tarjeta → transferencia → dólares)
+                const dvEfectivo = parseFloat(Math.min(pdEfectivo, dvRestante).toFixed(2));
+                pdEfectivo = parseFloat((pdEfectivo - dvEfectivo).toFixed(2));
+                dvRestante = parseFloat((dvRestante - dvEfectivo).toFixed(2));
+
+                const dvTarjeta = parseFloat(Math.min(pdTarjeta, dvRestante).toFixed(2));
+                pdTarjeta = parseFloat((pdTarjeta - dvTarjeta).toFixed(2));
+                dvRestante = parseFloat((dvRestante - dvTarjeta).toFixed(2));
+
+                const dvTransferencia = parseFloat(Math.min(pdTransferencia, dvRestante).toFixed(2));
+                pdTransferencia = parseFloat((pdTransferencia - dvTransferencia).toFixed(2));
+                dvRestante = parseFloat((dvRestante - dvTransferencia).toFixed(2));
+
+                const dvDolares = parseFloat(Math.min(pdDolares, dvRestante).toFixed(2));
+                pdDolares = parseFloat((pdDolares - dvDolares).toFixed(2));
+              }
+
               const pdCaiStr =
                 tipoDocumentoFiscal === "FACTURA"
                   ? sarCaiFactura
@@ -3669,22 +3696,20 @@ export default function PuntoDeVentaView({
               // PASO 3: Registrar costo_delivery
               try {
                 if (pdCostoEnvio > 0 && isOnline && estaConectado()) {
-                  await supabase
-                    .from("costo_delivery")
-                    .insert([
-                      {
-                        pedido_id:
-                          pd.id && !String(pd.id).startsWith("local-")
-                            ? Number(pd.id)
-                            : null,
-                        monto: pdCostoEnvio,
-                        fecha: pd.fecha || formatToHondurasLocal(),
-                        cliente: pd.cliente || null,
-                        cajero_id: usuarioActual?.id || null,
-                        caja: pd.caja || caiInfo?.caja_asignada || null,
-                        tipo_pago: paymentData.tipoPagoString || null,
-                      },
-                    ]);
+                  await supabase.from("costo_delivery").insert([
+                    {
+                      pedido_id:
+                        pd.id && !String(pd.id).startsWith("local-")
+                          ? Number(pd.id)
+                          : null,
+                      monto: pdCostoEnvio,
+                      fecha: pd.fecha || formatToHondurasLocal(),
+                      cliente: pd.cliente || null,
+                      cajero_id: usuarioActual?.id || null,
+                      caja: pd.caja || caiInfo?.caja_asignada || null,
+                      tipo_pago: paymentData.tipoPagoString || null,
+                    },
+                  ]);
                 }
               } catch (_) {}
 
@@ -3698,10 +3723,7 @@ export default function PuntoDeVentaView({
                   isOnline &&
                   estaConectado()
                 ) {
-                  await supabase
-                    .from("pedidos_envio")
-                    .delete()
-                    .eq("id", pd.id);
+                  await supabase.from("pedidos_envio").delete().eq("id", pd.id);
                 }
               } catch (_) {}
 
@@ -3725,8 +3747,7 @@ export default function PuntoDeVentaView({
 
               // PASO 7: Imprimir comprobante
               try {
-                const pdTotalMostrar =
-                  pdMontoProductos + pdCostoEnvio;
+                const pdTotalMostrar = pdMontoProductos + pdCostoEnvio;
                 const pdIsv15Monto = pdIsv15;
                 const pdIsv18Monto = pdIsv18;
 
@@ -3743,9 +3764,9 @@ export default function PuntoDeVentaView({
                       <div style='font-size:18px; font-weight:900; letter-spacing:2px;'>FACTURA</div>
                     </div>
                     <div style='font-size:11px; margin-bottom:3px; word-break:break-all;'><b>CAI:</b> ${sarCaiFactura || caiInfo?.cai || ""}</div>
-                    ${sarRangoDesde !== null && sarRangoHasta !== null ? `<div style='font-size:11px; margin-bottom:3px;'><b>Rango autorizado:</b> ${String(sarRangoDesde).padStart(8,"0")} al ${String(sarRangoHasta).padStart(8,"0")}</div>` : ""}
+                    ${sarRangoDesde !== null && sarRangoHasta !== null ? `<div style='font-size:11px; margin-bottom:3px;'><b>Rango autorizado:</b> ${String(sarRangoDesde).padStart(8, "0")} al ${String(sarRangoHasta).padStart(8, "0")}</div>` : ""}
                     <div style='font-size:12px; margin-bottom:3px;'><b>No. Factura:</b> ${facturaParaEstaVenta}</div>
-                    <div style='font-size:12px; margin-bottom:10px;'><b>Fecha límite de emisión:</b> ${sarFechaLimiteEmision ? new Date(sarFechaLimiteEmision + "T00:00:00").toLocaleDateString("es-HN", {timeZone:"America/Tegucigalpa"}) : ""}</div>
+                    <div style='font-size:12px; margin-bottom:10px;'><b>Fecha límite de emisión:</b> ${sarFechaLimiteEmision ? new Date(sarFechaLimiteEmision + "T00:00:00").toLocaleDateString("es-HN", { timeZone: "America/Tegucigalpa" }) : ""}</div>
                     <div style='border-top:1px dashed #000; margin-bottom:6px;'></div>
                     <div style='font-size:12px; font-weight:700; margin-bottom:3px;'>CLIENTE:</div>
                     <div style='font-size:12px; margin-bottom:2px;'>Nombre: ${(nombreClienteFiscal.trim() || pd.cliente || "CONSUMIDOR FINAL").toUpperCase()}</div>
@@ -3772,11 +3793,23 @@ export default function PuntoDeVentaView({
                         <tbody>
                           ${pdProductos
                             .map((it: any) => {
-                              const esGrav = it.tipo === "comida" || it.tipo === "bebida";
-                              const div = it.tipo === "bebida" ? 1.18 : it.tipo === "comida" ? 1.15 : 1;
-                              const pUnit = tipoDocumentoFiscal === "FACTURA" && esGrav ? it.precio / div : it.precio;
+                              const esGrav =
+                                it.tipo === "comida" || it.tipo === "bebida";
+                              const div =
+                                it.tipo === "bebida"
+                                  ? 1.18
+                                  : it.tipo === "comida"
+                                    ? 1.15
+                                    : 1;
+                              const pUnit =
+                                tipoDocumentoFiscal === "FACTURA" && esGrav
+                                  ? it.precio / div
+                                  : it.precio;
                               const tot = pUnit * it.cantidad;
-                              const etiq = tipoDocumentoFiscal === "FACTURA" && esGrav ? " (Gravado)" : "";
+                              const etiq =
+                                tipoDocumentoFiscal === "FACTURA" && esGrav
+                                  ? " (Gravado)"
+                                  : "";
                               return `<tr><td style='padding:3px 0; vertical-align:top;'>${it.cantidad}</td><td style='padding:3px 0; vertical-align:top;'>${it.nombre}${etiq}</td><td style='text-align:right;padding:3px 0; vertical-align:top;'>L${pUnit.toFixed(2)}</td><td style='text-align:right;padding:3px 0; vertical-align:top;'>L${tot.toFixed(2)}</td></tr>`;
                             })
                             .join("")}
@@ -3805,14 +3838,25 @@ export default function PuntoDeVentaView({
                     }
                     <div style='text-align:center; margin-top:18px; font-size:14px; font-weight:700; border-top:1px dashed #000; padding-top:10px;'>¡GRACIAS POR SU COMPRA!</div>
                     ${(() => {
-                      let ph = "<div style='border-top:1px dashed #000; margin-top:10px; padding-top:10px;'>";
-                      ph += "<div style='font-size:14px; font-weight:700; margin-bottom:4px;'>PAGO:</div>";
-                      if (pdEfectivo > 0) ph += `<div style='font-size:13px; display:flex; justify-content:space-between;'><span>Efectivo:</span><span>L ${pdEfectivo.toFixed(2)}</span></div>`;
-                      if (pdTarjeta > 0) ph += `<div style='font-size:13px; display:flex; justify-content:space-between;'><span>Tarjeta:</span><span>L ${pdTarjeta.toFixed(2)}</span></div>`;
-                      if (pdTransferencia > 0) ph += `<div style='font-size:13px; display:flex; justify-content:space-between;'><span>Transferencia:</span><span>L ${pdTransferencia.toFixed(2)}</span></div>`;
-                      if (pdDolares > 0) ph += `<div style='font-size:13px; display:flex; justify-content:space-between;'><span>D\u00f3lares:</span><span>L ${pdDolares.toFixed(2)}</span></div>`;
-                      const pdCambio = Math.max(0, paymentData.totalPaid - (pdMontoProductos + pdCostoEnvio));
-                      if (pdCambio > 0) ph += `<div style='font-size:13px; font-weight:700; display:flex; justify-content:space-between; border-top:1px solid #000; margin-top:4px; padding-top:4px;'><span>CAMBIO:</span><span>L ${pdCambio.toFixed(2)}</span></div>`;
+                      let ph =
+                        "<div style='border-top:1px dashed #000; margin-top:10px; padding-top:10px;'>";
+                      ph +=
+                        "<div style='font-size:14px; font-weight:700; margin-bottom:4px;'>PAGO:</div>";
+                      if (pdEfectivo > 0)
+                        ph += `<div style='font-size:13px; display:flex; justify-content:space-between;'><span>Efectivo:</span><span>L ${pdEfectivo.toFixed(2)}</span></div>`;
+                      if (pdTarjeta > 0)
+                        ph += `<div style='font-size:13px; display:flex; justify-content:space-between;'><span>Tarjeta:</span><span>L ${pdTarjeta.toFixed(2)}</span></div>`;
+                      if (pdTransferencia > 0)
+                        ph += `<div style='font-size:13px; display:flex; justify-content:space-between;'><span>Transferencia:</span><span>L ${pdTransferencia.toFixed(2)}</span></div>`;
+                      if (pdDolares > 0)
+                        ph += `<div style='font-size:13px; display:flex; justify-content:space-between;'><span>D\u00f3lares:</span><span>L ${pdDolares.toFixed(2)}</span></div>`;
+                      const pdCambio = Math.max(
+                        0,
+                        paymentData.totalPaid -
+                          (pdMontoProductos + pdCostoEnvio),
+                      );
+                      if (pdCambio > 0)
+                        ph += `<div style='font-size:13px; font-weight:700; display:flex; justify-content:space-between; border-top:1px solid #000; margin-top:4px; padding-top:4px;'><span>CAMBIO:</span><span>L ${pdCambio.toFixed(2)}</span></div>`;
                       ph += "</div>";
                       return ph;
                     })()}
@@ -3837,7 +3881,10 @@ export default function PuntoDeVentaView({
                   };
                 }
               } catch (printErr) {
-                console.error("Error imprimiendo comprobante delivery:", printErr);
+                console.error(
+                  "Error imprimiendo comprobante delivery:",
+                  printErr,
+                );
               }
 
               const pdMensaje = pdGuardadoEnSupabase
@@ -3846,9 +3893,7 @@ export default function PuntoDeVentaView({
               alert(pdMensaje);
             } catch (pdErr) {
               console.error("Error procesando entrega de pedido:", pdErr);
-              alert(
-                "Error procesando entrega. Verifique los datos guardados.",
-              );
+              alert("Error procesando entrega. Verifique los datos guardados.");
             } finally {
               setPedidoPendienteEntrega(null);
               setShowPagoModal(false);
@@ -4169,7 +4214,7 @@ export default function PuntoDeVentaView({
                 (s, p) => s + (p.precio - p.precio / 1.18) * p.cantidad,
                 0,
               );
-              const _baseExentaFact = snap.seleccionados
+            const _baseExentaFact = snap.seleccionados
               .filter((p) => p.tipo !== "comida" && p.tipo !== "bebida")
               .reduce((s, p) => s + p.precio * p.cantidad, 0);
             void _baseExentaFact; // reservado para uso futuro
@@ -4207,9 +4252,9 @@ export default function PuntoDeVentaView({
                   <div style='font-size:18px; font-weight:900; letter-spacing:2px;'>FACTURA</div>
                 </div>
                 <div style='font-size:11px; margin-bottom:3px; word-break:break-all;'><b>CAI:</b> ${sarCaiFactura || caiInfo?.cai || ""}</div>
-                ${sarRangoDesde !== null && sarRangoHasta !== null ? `<div style='font-size:11px; margin-bottom:3px;'><b>Rango autorizado:</b> ${String(sarRangoDesde).padStart(8,"0")} al ${String(sarRangoHasta).padStart(8,"0")}</div>` : ""}
+                ${sarRangoDesde !== null && sarRangoHasta !== null ? `<div style='font-size:11px; margin-bottom:3px;'><b>Rango autorizado:</b> ${String(sarRangoDesde).padStart(8, "0")} al ${String(sarRangoHasta).padStart(8, "0")}</div>` : ""}
                 <div style='font-size:12px; margin-bottom:3px;'><b>No. Factura:</b> ${facturaParaEstaVenta || snap.facturaActual || ""}</div>
-                <div style='font-size:12px; margin-bottom:10px;'><b>Fecha límite de emisión:</b> ${sarFechaLimiteEmision ? new Date(sarFechaLimiteEmision + "T00:00:00").toLocaleDateString("es-HN", {timeZone:"America/Tegucigalpa"}) : ""}</div>
+                <div style='font-size:12px; margin-bottom:10px;'><b>Fecha límite de emisión:</b> ${sarFechaLimiteEmision ? new Date(sarFechaLimiteEmision + "T00:00:00").toLocaleDateString("es-HN", { timeZone: "America/Tegucigalpa" }) : ""}</div>
                 <div style='border-top:1px dashed #000; margin-bottom:8px;'></div>
                 <div style='font-size:12px; font-weight:700; margin-bottom:3px;'>CLIENTE:</div>
                 <div style='font-size:12px; margin-bottom:2px;'>Nombre: ${((nombreClienteFiscal || "").trim() || snap.nombreCliente || "CONSUMIDOR FINAL").toUpperCase()}</div>
@@ -4242,11 +4287,23 @@ export default function PuntoDeVentaView({
                     <tbody>
                       ${snap.seleccionados
                         .map((p) => {
-                          const esGravado = p.tipo === "comida" || p.tipo === "bebida";
-                          const divisor = p.tipo === "bebida" ? 1.18 : p.tipo === "comida" ? 1.15 : 1;
-                          const precioSinIsv = tipoDocumentoFiscal === "FACTURA" && esGravado ? p.precio / divisor : p.precio;
+                          const esGravado =
+                            p.tipo === "comida" || p.tipo === "bebida";
+                          const divisor =
+                            p.tipo === "bebida"
+                              ? 1.18
+                              : p.tipo === "comida"
+                                ? 1.15
+                                : 1;
+                          const precioSinIsv =
+                            tipoDocumentoFiscal === "FACTURA" && esGravado
+                              ? p.precio / divisor
+                              : p.precio;
                           const totalSinIsv = precioSinIsv * p.cantidad;
-                          const etiqueta = tipoDocumentoFiscal === "FACTURA" && esGravado ? ` (Gravado)` : "";
+                          const etiqueta =
+                            tipoDocumentoFiscal === "FACTURA" && esGravado
+                              ? ` (Gravado)`
+                              : "";
                           return `<tr>
                             <td style='padding:4px 0; vertical-align:top;'>${p.cantidad}</td>
                             <td style='padding:4px 0; vertical-align:top;'>${p.nombre}${etiqueta}</td>
@@ -6763,7 +6820,6 @@ export default function PuntoDeVentaView({
                     }}
                   />
                 </div>
-
 
                 <div style={{ marginBottom: 16 }}>
                   <label
