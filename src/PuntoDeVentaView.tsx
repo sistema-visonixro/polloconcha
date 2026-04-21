@@ -189,8 +189,48 @@ export default function PuntoDeVentaView({
 
     try {
       // ── Helper: obtener siguiente número libre para este cajero ───────────
-      // 1. Intenta RPC. 2. Si falla (404/error), consulta MAX de ventas + 1.
+      // Las ventas a CRÉDITO siempre usan el correlativo de RECIBO (nunca el
+      // correlativo SAR de FACTURA fiscal).  Orden de prioridad:
+      //   1. Consultar directamente el CAI de tipo RECIBO (más explícito)
+      //   2. RPC obtener_siguiente_factura (prefiere RECIBO si el patch está aplicado)
+      //   3. MAX de ventas + 1 (fallback sin RPC)
       const obtenerNumeroLibreCredito = async (): Promise<string | null> => {
+        // 1. Primero: buscar CAI tipo RECIBO activo directo en cai_facturas
+        try {
+          const { data: caiRecibo } = await supabase
+            .from("cai_facturas")
+            .select("id, factura_actual, rango_desde, rango_hasta")
+            .eq("cajero_id", usuarioActual?.id ?? "")
+            .eq("activo", true)
+            .eq("tipo_comprobante", "RECIBO")
+            .maybeSingle();
+
+          if (caiRecibo) {
+            const actual = parseInt(caiRecibo.factura_actual || "0");
+            const siguiente = (
+              actual >= caiRecibo.rango_desde ? actual + 1 : caiRecibo.rango_desde
+            );
+            if (siguiente <= caiRecibo.rango_hasta) {
+              // Verificar que no esté en uso
+              const { data: existe } = await supabase
+                .from("ventas")
+                .select("id")
+                .eq("factura", String(siguiente))
+                .eq("cajero_id", usuarioActual?.id ?? "")
+                .maybeSingle();
+              if (!existe) {
+                // Actualizar contador en cai_facturas
+                await supabase
+                  .from("cai_facturas")
+                  .update({ factura_actual: String(siguiente + 1) })
+                  .eq("id", caiRecibo.id);
+                return String(siguiente);
+              }
+            }
+          }
+        } catch (_) { /* si falla, continuar a fallback */ }
+
+        // 2. RPC general (prefiere RECIBO cuando el patch está aplicado)
         const { data: rpcNum, error: rpcErr } = await supabase.rpc(
           "obtener_siguiente_factura",
           { p_cajero_id: usuarioActual?.id ?? "" },
@@ -198,7 +238,7 @@ export default function PuntoDeVentaView({
         if (!rpcErr && rpcNum && rpcNum !== "LIMITE_ALCANZADO") {
           return rpcNum as string;
         }
-        // Fallback: MAX de ventas de este cajero (funciona aunque el RPC no esté desplegado)
+        // 3. Fallback: MAX de ventas de este cajero (funciona aunque el RPC no esté desplegado)
         const { data: rows } = await supabase
           .from("ventas")
           .select("factura")
@@ -220,11 +260,14 @@ export default function PuntoDeVentaView({
             return siguiente;
           }
         }
-        // Si no hay ventas aún, usar rango_desde del CAI
+        // Si no hay ventas aún, usar rango_desde del CAI tipo RECIBO primero
         const { data: caiRow } = await supabase
           .from("cai_facturas")
           .select("rango_desde")
           .eq("cajero_id", usuarioActual?.id ?? "")
+          .eq("activo", true)
+          .order("tipo_comprobante", { ascending: false }) // RECIBO antes que FACTURA (R > F alfabético)
+          .limit(1)
           .maybeSingle();
         if (caiRow?.rango_desde) return String(caiRow.rango_desde);
         // Último recurso: valor del estado local

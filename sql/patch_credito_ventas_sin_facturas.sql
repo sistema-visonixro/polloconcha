@@ -75,9 +75,11 @@ BEGIN
 
     -- 3. Insertar en ventas (tabla principal, tipo = 'CREDITO')
     --    Los campos de pago van en cero porque el pago es diferido.
+    --    tipo_documento_fiscal = 'RECIBO' porque las ventas a crédito
+    --    usan correlativo de recibo, no número SAR fiscal.
     INSERT INTO public.ventas
         (fecha_hora, cajero, cajero_id, caja, cai, factura, cliente,
-         tipo, tipo_orden, operation_id,
+         tipo, tipo_orden, operation_id, tipo_documento_fiscal,
          productos, sub_total, isv_15, isv_18, total,
          efectivo, tarjeta, transferencia, dolares, dolares_usd,
          delivery, total_recibido, cambio)
@@ -85,7 +87,7 @@ BEGIN
         (p_fecha_hora::TIMESTAMPTZ,
          p_cajero, p_cajero_id, p_caja, p_cai,
          p_factura_numero, v_nombre_cliente,
-         'CREDITO', p_tipo_orden, gen_random_uuid(),
+         'CREDITO', p_tipo_orden, gen_random_uuid(), 'RECIBO',
          p_productos::TEXT, p_sub_total, p_isv_15, p_isv_18, p_total,
          0, 0, 0, 0, 0,
          0, 0, 0);
