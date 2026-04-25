@@ -2103,14 +2103,17 @@ export async function sincronizarVentas(): Promise<{
               } catch {
                 /* continuar con fallback */
               }
-              // 2. Fallback: MAX del cajero (cada cajero tiene su propio rango de CAI)
+              // 2. Fallback: MAX del cajero — ordenar por id DESC para capturar
+              // las facturas más recientes (evita truncado de 1000 filas por defecto)
               try {
                 const { data: rows } = await supabase
                   .from("ventas")
                   .select("factura")
                   .eq("cajero_id", cajeroId)
                   .not("factura", "like", "DEV-%")
-                  .not("factura", "like", "OFFLINE-%");
+                  .not("factura", "like", "OFFLINE-%")
+                  .order("id", { ascending: false })
+                  .limit(500);
                 if (rows && rows.length > 0) {
                   const maxNum = rows.reduce((max, r) => {
                     const n = parseInt(r.factura);

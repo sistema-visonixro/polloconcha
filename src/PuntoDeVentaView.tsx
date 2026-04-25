@@ -4820,14 +4820,17 @@ export default function PuntoDeVentaView({
                       .maybeSingle();
                     if (!existe) return rpcNum as string;
                   }
-                  // 2. Fallback: MAX del cajero actual (rangos son independientes por CAI/cajero)
+                  // 2. Fallback: MAX del cajero actual — ordenar por id DESC para capturar
+                  // las facturas más recientes (evita truncado de 1000 filas por defecto)
                   try {
                     const { data: rows } = await supabase
                       .from("ventas")
                       .select("factura")
                       .eq("cajero_id", usuarioActual?.id ?? "")
                       .not("factura", "like", "DEV-%")
-                      .not("factura", "like", "OFFLINE-%");
+                      .not("factura", "like", "OFFLINE-%")
+                      .order("id", { ascending: false })
+                      .limit(500);
                     if (rows && rows.length > 0) {
                       const maxNum = rows.reduce((max, r) => {
                         const n = parseInt(r.factura);
@@ -4906,12 +4909,25 @@ export default function PuntoDeVentaView({
                               `✓ Venta guardada con factura corregida: ${nuevoNum}`,
                             );
                             guardadoEnSupabase = true;
+                            // Actualizar facturaParaEstaVenta para que el bloque posterior
+                            // incremente el contador desde el número correcto
+                            facturaParaEstaVenta = nuevoNum;
                             // Solo actualizar estado RECIBO; FACTURA SAR usa RPC atómico
                             if (tipoDocumentoFiscal !== "FACTURA") {
                               const siguienteDisplay = (
                                 parseInt(nuevoNum) + 1
                               ).toString();
                               setFacturaActual(siguienteDisplay);
+                              // Persistir en Supabase para que la próxima sesión empiece desde aquí
+                              try {
+                                await supabase
+                                  .from("cai_facturas")
+                                  .update({ factura_actual: siguienteDisplay })
+                                  .eq("cajero_id", usuarioActual?.id ?? "")
+                                  .eq("tipo_comprobante", "RECIBO");
+                              } catch {
+                                /* non-critical */
+                              }
                               try {
                                 const caiC = await obtenerCaiCache(
                                   usuarioActual?.id,
