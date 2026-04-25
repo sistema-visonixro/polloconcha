@@ -2,6 +2,15 @@ import { useState, useEffect } from "react";
 import { supabase } from "./supabaseClient";
 import { formatToHondurasLocal } from "./utils/fechas";
 import { useDatosNegocio } from "./useDatosNegocio";
+import {
+  calcularResumenTurno,
+  getAperturaActiva,
+  upsertOne,
+  getAll,
+  STORE,
+  getPrecioDolarLocal,
+} from "./utils/localDB";
+import { limpiarAperturaLocalStorage } from "./utils/offlineSync";
 interface UsuarioActual {
   nombre: string;
   [key: string]: any;
@@ -57,18 +66,24 @@ export default function RegistroCierreView({
     };
   }, [usuarioActual?.id, caja]);
 
-  // Calcular valores automáticos desde v_resumen_turnos
+  // Calcular valores automáticos — IDB primero, Supabase como respaldo
   async function obtenerValoresAutomaticos() {
-    // 1. Fondo fijo: sigue leyendo desde cierres (no está en la vista)
-    const { data: aperturaActual } = await supabase
-      .from("cierres")
-      .select("fondo_fijo_registrado, fecha, estado")
-      .eq("cajero_id", usuarioActual?.id)
-      .eq("caja", caja)
-      .eq("estado", "APERTURA")
-      .order("fecha", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    // 1. Apertura desde IDB primero
+    let aperturaActual: any = await getAperturaActiva(usuarioActual?.id ?? "");
+
+    // Fallback Supabase si IDB no tiene la apertura
+    if (!aperturaActual) {
+      const { data } = await supabase
+        .from("cierres")
+        .select("id, fondo_fijo_registrado, fecha, estado")
+        .eq("cajero_id", usuarioActual?.id)
+        .eq("caja", caja)
+        .eq("estado", "APERTURA")
+        .order("fecha", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      aperturaActual = data;
+    }
 
     if (!aperturaActual) {
       setEfectivoSistema(0);
@@ -91,41 +106,52 @@ export default function RegistroCierreView({
       aperturaActual.fondo_fijo_registrado || "0",
     );
 
-    // 2. Leer el turno actual desde v_resumen_turnos
-    const { data: turno, error: turnoError } = await supabase
-      .from("v_resumen_turnos")
-      .select(
-        "efectivo_neto, efectivo_bruto, cambio_devuelto, tarjeta, transferencia, dolares_usd, gastos, platillos_vendidos, bebidas_vendidas, platillos_donados, bebidas_donadas, total_platillos, total_bebidas, total_ventas",
-      )
-      .eq("cajero_id", usuarioActual?.id)
-      .eq("caja", caja)
-      .order("fecha_apertura", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (turnoError) {
-      console.error("Error leyendo v_resumen_turnos:", turnoError);
+    // 2. Calcular resumen desde IDB (sin Supabase)
+    let turnoIDB: any = null;
+    try {
+      if (aperturaActual.id) {
+        turnoIDB = await calcularResumenTurno(
+          Number(aperturaActual.id),
+          usuarioActual?.id ?? "",
+        );
+      }
+    } catch (e) {
+      console.warn("[RegistroCierre] calcularResumenTurno error:", e);
     }
 
-    const efectivoDia = parseFloat(turno?.efectivo_neto ?? 0);
-    const tarjetaDia = parseFloat(turno?.tarjeta ?? 0);
-    const transferenciasDia = parseFloat(turno?.transferencia ?? 0);
-    const dolaresDia = parseFloat(turno?.dolares_usd ?? 0);
-    const gastosDia = parseFloat(turno?.gastos ?? 0);
-    const platillosDia = parseFloat(turno?.total_platillos ?? turno?.platillos_vendidos ?? 0);
-    const bebidasDia = parseFloat(turno?.total_bebidas ?? turno?.bebidas_vendidas ?? 0);
-    const totalVentasDia = parseFloat(turno?.total_ventas ?? 0);
+    // 3. Fallback a v_resumen_turnos en Supabase si IDB no tiene datos
+    if (!turnoIDB && navigator.onLine) {
+      try {
+        const { data } = await supabase
+          .from("v_resumen_turnos")
+          .select(
+            "efectivo_neto, efectivo_bruto, cambio_devuelto, tarjeta, transferencia, dolares_usd, gastos, platillos_vendidos, bebidas_vendidas, platillos_donados, bebidas_donadas, total_platillos, total_bebidas, total_ventas",
+          )
+          .eq("cajero_id", usuarioActual?.id)
+          .eq("caja", caja)
+          .order("fecha_apertura", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        turnoIDB = data;
+      } catch {
+        /* sin conexión */
+      }
+    }
 
-    console.debug("v_resumen_turnos →", {
-      efectivoDia,
-      tarjetaDia,
-      transferenciasDia,
-      dolaresDia,
-      gastosDia,
-      platillosDia,
-      bebidasDia,
-      totalVentasDia,
-    });
+    const efectivoDia = parseFloat(turnoIDB?.efectivo_neto ?? 0);
+    const tarjetaDia = parseFloat(turnoIDB?.tarjeta ?? 0);
+    const transferenciasDia = parseFloat(
+      turnoIDB?.transferencia ?? turnoIDB?.transferencia ?? 0,
+    );
+    const dolaresDia = parseFloat(turnoIDB?.dolares_usd ?? 0);
+    const gastosDia = parseFloat(turnoIDB?.gastos ?? 0);
+    const platillosDia = parseFloat(
+      turnoIDB?.total_platillos ?? turnoIDB?.platillos_vendidos ?? 0,
+    );
+    const bebidasDia = parseFloat(
+      turnoIDB?.total_bebidas ?? turnoIDB?.bebidas_vendidas ?? 0,
+    );
+    const totalVentasDia = parseFloat(turnoIDB?.total_ventas ?? 0);
 
     setEfectivoSistema(efectivoDia);
     setTarjetaSistema(tarjetaDia);
@@ -304,21 +330,8 @@ export default function RegistroCierreView({
       const dolaresRegistrado =
         dolares && parseFloat(dolares) > 0 ? parseFloat(dolares) : 0;
 
-      // Obtener precio del dólar para convertir diferencia de dólares a Lempiras
-      let precioDolar = 0;
-      try {
-        const { data: precioData } = await supabase
-          .from("precio_dolar")
-          .select("valor")
-          .eq("id", "singleton")
-          .limit(1)
-          .single();
-        if (precioData && typeof precioData.valor !== "undefined") {
-          precioDolar = Number(precioData.valor) || 0;
-        }
-      } catch (e) {
-        console.warn("No se pudo obtener precio_dolar:", e);
-      }
+      // Obtener precio del dólar desde IDB (siempre disponible offline)
+      const precioDolar = await getPrecioDolarLocal();
 
       // Calcular diferencia de dólares en Lempiras
       const diferenciaDolaresUSD = dolaresRegistrado - dolaresDia;
@@ -386,71 +399,130 @@ export default function RegistroCierreView({
         observacion,
       };
 
-      // Para CIERRE: buscar si hay una apertura del día con estado='APERTURA' y actualizarla
-      // En lugar de crear una nueva fila
-      let error = null;
-      let registroId = null;
-      if (registro.tipo_registro === "cierre") {
-        // Buscar la última apertura activa sin importar el día
-        // (si no hubo cierre, la apertura puede ser de días anteriores)
-        const { data: aperturaDelDia } = await supabase
-          .from("cierres")
-          .select("id")
-          .eq("cajero_id", usuarioActual?.id)
-          .eq("caja", caja)
-          .eq("estado", "APERTURA")
-          .order("fecha", { ascending: false })
-          .limit(1)
-          .maybeSingle();
+      // ── GUARDAR CIERRE: IDB primero, Supabase solo si hay conexión ──
+      let idbOk = false;
+      let registroId: string | number | null = null;
 
-        if (aperturaDelDia) {
-          // Actualizar la misma fila con los datos del cierre
-          const { error: updateError } = await supabase
-            .from("cierres")
-            .update({
-              tipo_registro: "cierre",
-              fecha: registro.fecha, // Actualizar a la fecha/hora del cierre (no la de apertura)
-              fondo_fijo_registrado: registro.fondo_fijo_registrado,
-              fondo_fijo: registro.fondo_fijo,
-              efectivo_registrado: registro.efectivo_registrado,
-              efectivo_dia: registro.efectivo_dia,
-              monto_tarjeta_registrado: registro.monto_tarjeta_registrado,
-              monto_tarjeta_dia: registro.monto_tarjeta_dia,
-              transferencias_registradas: registro.transferencias_registradas,
-              transferencias_dia: registro.transferencias_dia,
-              dolares_registrado: registro.dolares_registrado,
-              dolares_dia: registro.dolares_dia,
-              diferencia: registro.diferencia,
-              observacion: registro.observacion,
-              estado: "CIERRE",
-            })
-            .eq("id", aperturaDelDia.id);
-          error = updateError;
-          registroId = aperturaDelDia.id;
-        } else {
-          // No hay apertura, insertar como cierre (compatibilidad con registros antiguos)
-          const { data: insertData, error: insertError } = await supabase
-            .from("cierres")
-            .insert([{ ...registro, estado: "CIERRE" }])
-            .select("id")
-            .single();
-          error = insertError;
-          registroId = insertData?.id;
+      // 1. Siempre actualizar IDB
+      try {
+        // getAperturaActiva ya no filtra por fecha, pero por seguridad
+        // también buscamos directamente en STORE.CIERRES como fallback
+        let aperturaIdb = await getAperturaActiva(usuarioActual?.id ?? "");
+
+        if (!aperturaIdb) {
+          // Búsqueda directa sin filtro de fecha (turno de medianoche u otros casos)
+          const todosCierres = await getAll(STORE.CIERRES);
+          aperturaIdb =
+            todosCierres
+              .filter(
+                (c: any) =>
+                  c.cajero_id === usuarioActual?.id && c.estado === "APERTURA",
+              )
+              .sort(
+                (a: any, b: any) =>
+                  new Date(b.fecha ?? 0).getTime() -
+                  new Date(a.fecha ?? 0).getTime(),
+              )[0] ?? null;
         }
-      } else {
-        // Es apertura, insertar normalmente
-        const { data: insertData, error: insertError } = await supabase
-          .from("cierres")
-          .insert([{ ...registro, estado: "APERTURA" }])
-          .select("id")
-          .single();
-        error = insertError;
-        registroId = insertData?.id;
+
+        if (aperturaIdb) {
+          const cierreIdb = {
+            ...aperturaIdb,
+            tipo_registro: "cierre",
+            fecha: registro.fecha,
+            fondo_fijo_registrado: registro.fondo_fijo_registrado,
+            fondo_fijo: registro.fondo_fijo,
+            efectivo_registrado: registro.efectivo_registrado,
+            efectivo_dia: registro.efectivo_dia,
+            monto_tarjeta_registrado: registro.monto_tarjeta_registrado,
+            monto_tarjeta_dia: registro.monto_tarjeta_dia,
+            transferencias_registradas: registro.transferencias_registradas,
+            transferencias_dia: registro.transferencias_dia,
+            dolares_registrado: registro.dolares_registrado,
+            dolares_dia: registro.dolares_dia,
+            diferencia: registro.diferencia,
+            observacion: registro.observacion,
+            estado: "CIERRE",
+          };
+          await upsertOne(STORE.CIERRES, cierreIdb);
+          registroId = aperturaIdb.id;
+        } else {
+          // Sin apertura en IDB, crear registro de cierre con id temporal
+          const tempId = -Date.now();
+          await upsertOne(STORE.CIERRES, {
+            ...registro,
+            id: tempId,
+            estado: "CIERRE",
+          });
+          registroId = tempId;
+        }
+        limpiarAperturaLocalStorage();
+        idbOk = true;
+      } catch (idbErr) {
+        console.warn("[RegistroCierre] Error guardando en IDB:", idbErr);
+      }
+
+      // 2. Si hay conexión, sincronizar con Supabase
+      if (navigator.onLine) {
+        try {
+          // Buscar apertura activa en Supabase
+          const { data: aperturaDelDia, error: errAp } = await supabase
+            .from("cierres")
+            .select("id")
+            .eq("cajero_id", usuarioActual?.id)
+            .eq("caja", caja)
+            .eq("estado", "APERTURA")
+            .order("fecha", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (errAp) throw errAp; // error de red → catch lo maneja
+
+          if (aperturaDelDia) {
+            const { error: updateError } = await supabase
+              .from("cierres")
+              .update({
+                tipo_registro: "cierre",
+                fecha: registro.fecha,
+                fondo_fijo_registrado: registro.fondo_fijo_registrado,
+                fondo_fijo: registro.fondo_fijo,
+                efectivo_registrado: registro.efectivo_registrado,
+                efectivo_dia: registro.efectivo_dia,
+                monto_tarjeta_registrado: registro.monto_tarjeta_registrado,
+                monto_tarjeta_dia: registro.monto_tarjeta_dia,
+                transferencias_registradas: registro.transferencias_registradas,
+                transferencias_dia: registro.transferencias_dia,
+                dolares_registrado: registro.dolares_registrado,
+                dolares_dia: registro.dolares_dia,
+                diferencia: registro.diferencia,
+                observacion: registro.observacion,
+                estado: "CIERRE",
+              })
+              .eq("id", aperturaDelDia.id);
+            if (updateError) throw updateError;
+            registroId = aperturaDelDia.id;
+          } else {
+            // No hay apertura en Supabase, insertar cierre directo
+            const { data: insertData, error: insertError } = await supabase
+              .from("cierres")
+              .insert([{ ...registro, estado: "CIERRE" }])
+              .select("id")
+              .single();
+            if (insertError) throw insertError;
+            if (insertData?.id) registroId = insertData.id;
+          }
+        } catch (sbErr: any) {
+          console.warn(
+            "[RegistroCierre] Supabase offline, cierre guardado solo en IDB:",
+            sbErr,
+          );
+          // Si ya guardamos en IDB, no mostrar error al usuario
+        }
       }
 
       setGuardando(false);
-      if (error) {
-        alert("Error al guardar: " + error.message);
+      if (!idbOk) {
+        alert("Error al guardar: no se pudo registrar el cierre.");
       } else {
         // Imprimir reporte si es CIERRE
         if (registro.tipo_registro === "cierre") {

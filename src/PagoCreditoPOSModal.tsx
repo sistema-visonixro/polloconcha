@@ -18,6 +18,7 @@ import {
   registrarPagoCredito,
 } from "./services/creditoService";
 import { useDatosNegocio } from "./useDatosNegocio";
+import { getAll, getByIndex, STORE } from "./utils/localDB";
 
 interface Props {
   isOpen: boolean;
@@ -113,6 +114,23 @@ export default function PagoCreditoPOSModal({
   async function buscarClientes(term: string) {
     setCargandoBusq(true);
     try {
+      // ── IDB primero ─────────────────────────────────────────
+      const todosIdb = await getAll<ClienteCredito>(STORE.CLIENTES_CREDITO);
+      if (todosIdb.length > 0) {
+        const t = term.toLowerCase();
+        const filtrados = todosIdb.filter(
+          (c) =>
+            c.activo !== false &&
+            (c.nombre?.toLowerCase().includes(t) ||
+              c.dni?.toLowerCase().includes(t)),
+        );
+        filtrados.sort((a, b) => (a.nombre ?? "").localeCompare(b.nombre ?? ""));
+        setClientes(filtrados.slice(0, 20));
+        setCargandoBusq(false);
+        return;
+      }
+
+      // ── Fallback Supabase ───────────────────────────────────
       const data = await buscarClientesCredito(term);
       setClientes(data);
     } catch (e: any) {
@@ -126,10 +144,59 @@ export default function PagoCreditoPOSModal({
     setCargandoDet(true);
     setError(null);
     try {
-      const [cta, facs] = await Promise.all([
-        obtenerCuentaCobrar(cli.id),
-        obtenerFacturasCliente(cli.id, true),
-      ]);
+      // ── IDB primero para cuenta por cobrar ─────────────────
+      let cta: CuentaPorCobrar | null = null;
+      try {
+        const cuentasIdb = await getByIndex<CuentaPorCobrar>(
+          STORE.CUENTAS_COBRAR,
+          "cliente_id",
+          cli.id,
+        );
+        if (cuentasIdb.length > 0) cta = cuentasIdb[0];
+      } catch { /* IDB no disponible */ }
+
+      // ── IDB primero para facturas pendientes ───────────────
+      let facs: FacturaCredito[] = [];
+      try {
+        const facturasIdb = await getAll<any>(STORE.FACTURAS_CREDITO);
+        facs = facturasIdb
+          .filter(
+            (f: any) =>
+              f.cliente_id === cli.id &&
+              (f.estado === "pendiente" || f.estado === "parcial"),
+          )
+          .sort(
+            (a: any, b: any) =>
+              new Date(b.fecha_hora ?? 0).getTime() -
+              new Date(a.fecha_hora ?? 0).getTime(),
+          )
+          .map((row: any) => ({
+            ...row,
+            productos:
+              typeof row.productos === "string"
+                ? JSON.parse(row.productos)
+                : row.productos,
+            total: row.total ?? 0,
+            saldo_anterior: row.saldo_anterior ?? 0,
+            nuevo_saldo: row.nuevo_saldo ?? 0,
+            sub_total: row.sub_total ?? 0,
+            isv_15: row.isv_15 ?? 0,
+            isv_18: row.isv_18 ?? 0,
+          }));
+      } catch { /* IDB no disponible */ }
+
+      // ── Fallback Supabase si IDB no tiene datos ─────────────
+      if (!cta && navigator.onLine) {
+        try {
+          cta = await obtenerCuentaCobrar(cli.id);
+        } catch { /* sin conexión real */ }
+      }
+      if (facs.length === 0 && navigator.onLine) {
+        try {
+          facs = await obtenerFacturasCliente(cli.id, true);
+        } catch { /* sin conexión real */ }
+      }
+
       setClienteSlc(cli);
       setCuenta(cta);
       setFacturas(facs);

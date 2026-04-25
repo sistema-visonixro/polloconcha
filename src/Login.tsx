@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useDatosNegocio } from "./useDatosNegocio";
+import { loginOffline, upsertBulk, STORE } from "./utils/localDB";
 
 interface LoginProps {
   onLogin: (user: any) => void;
@@ -63,20 +64,31 @@ export default function Login({ onLogin }: LoginProps) {
     setLoading(true);
     setError("");
     try {
-      const API_URL = `${
-        import.meta.env.VITE_SUPABASE_URL
-      }/rest/v1/usuarios?select=*`;
-      const API_KEY = import.meta.env.VITE_SUPABASE_KEY || "";
-      const res = await fetch(API_URL, {
-        headers: {
-          apikey: API_KEY,
-          Authorization: `Bearer ${API_KEY}`,
-        },
-      });
-      const users = await res.json();
-      const user = users.find(
-        (u: any) => u.codigo === codigo && u.clave === clave,
-      );
+      // 1. Intentar autenticar desde IndexedDB (offline-first)
+      let user = await loginOffline(codigo, clave);
+
+      // 2. Si no está en IDB y hay internet → buscar en Supabase y guardar en IDB
+      if (!user && navigator.onLine) {
+        const API_URL = `${import.meta.env.VITE_SUPABASE_URL}/rest/v1/usuarios?select=*`;
+        const API_KEY = import.meta.env.VITE_SUPABASE_KEY || "";
+        try {
+          const res = await fetch(API_URL, {
+            headers: { apikey: API_KEY, Authorization: `Bearer ${API_KEY}` },
+          });
+          const users = await res.json();
+          if (Array.isArray(users) && users.length > 0) {
+            // Guardar todos los usuarios en IDB para próximas sesiones offline
+            await upsertBulk(STORE.USUARIOS, users);
+            user =
+              users.find(
+                (u: any) => u.codigo === codigo && u.clave === clave,
+              ) ?? null;
+          }
+        } catch {
+          // Sin internet real; continuamos con IDB
+        }
+      }
+
       if (user) {
         // Los cajeros ahora van directo a Punto de Ventas, sin verificar apertura/cierre
         setShowSplash(true);
@@ -96,11 +108,15 @@ export default function Login({ onLogin }: LoginProps) {
           onLogin(user);
           window.location.reload();
         }, 2000);
+      } else if (!navigator.onLine) {
+        setError(
+          "Sin conexión y sin datos locales. Conéctese a internet la primera vez.",
+        );
       } else {
         setError("Credenciales incorrectas");
       }
     } catch (err) {
-      setError("Error de conexión");
+      setError("Error al autenticar");
     }
     setLoading(false);
   };

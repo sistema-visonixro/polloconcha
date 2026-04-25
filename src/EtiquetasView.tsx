@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from "react";
 import { supabase } from "./supabaseClient";
-import { 
-  ChevronLeftIcon, 
-  ScaleIcon, 
-  PlusIcon, 
-  TrashIcon, 
+import {
+  ChevronLeftIcon,
+  ScaleIcon,
+  PlusIcon,
+  TrashIcon,
   EyeIcon,
-  CogIcon
+  CogIcon,
 } from "@heroicons/react/24/outline";
 
 interface EtiquetasViewProps {
@@ -22,17 +22,29 @@ interface ProductoDemo {
 
 const EtiquetasView: React.FC<EtiquetasViewProps> = ({ onBack }) => {
   // Estados principales
-  const [padding, setPadding] = useState(() => localStorage.getItem("etiqueta_padding") || "8");
+  const [padding, setPadding] = useState(
+    () => localStorage.getItem("etiqueta_padding") || "8",
+  );
   const [clienteDemo, setClienteDemo] = useState("Cliente de ejemplo");
   const [productosDemo, setProductosDemo] = useState<ProductoDemo[]>([
     { id: "1", nombre: "Pollo Asado", precio: 120, cantidad: 1 },
     { id: "2", nombre: "Papas Fritas", precio: 45, cantidad: 2 },
   ]);
-  const [comanda, setComanda] = useState(() => localStorage.getItem("etiqueta_comanda") || "");
-  const [recibo, setRecibo] = useState(() => localStorage.getItem("etiqueta_recibo") || "");
-  const [ancho, setAncho] = useState(() => localStorage.getItem("etiqueta_ancho") || "58");
-  const [alto, setAlto] = useState(() => localStorage.getItem("etiqueta_alto") || "40");
-  const [fontSize, setFontSize] = useState(() => localStorage.getItem("etiqueta_fontSize") || "14");
+  const [comanda, setComanda] = useState(
+    () => localStorage.getItem("etiqueta_comanda") || "",
+  );
+  const [recibo, setRecibo] = useState(
+    () => localStorage.getItem("etiqueta_recibo") || "",
+  );
+  const [ancho, setAncho] = useState(
+    () => localStorage.getItem("etiqueta_ancho") || "58",
+  );
+  const [alto, setAlto] = useState(
+    () => localStorage.getItem("etiqueta_alto") || "40",
+  );
+  const [fontSize, setFontSize] = useState(
+    () => localStorage.getItem("etiqueta_fontSize") || "14",
+  );
   const [isSaving, setIsSaving] = useState(false);
   const [showPreview, setShowPreview] = useState(true);
 
@@ -45,7 +57,7 @@ const EtiquetasView: React.FC<EtiquetasViewProps> = ({ onBack }) => {
           .select("*")
           .eq("nombre", "default")
           .single();
-        
+
         if (data && !error) {
           setComanda(data.etiqueta_comanda || "");
           setRecibo(data.etiqueta_recibo || "");
@@ -62,12 +74,17 @@ const EtiquetasView: React.FC<EtiquetasViewProps> = ({ onBack }) => {
   }, []);
 
   // Funciones para productos demo
-  const handleDemoChange = (index: number, field: keyof ProductoDemo, value: string | number) => {
+  const handleDemoChange = (
+    index: number,
+    field: keyof ProductoDemo,
+    value: string | number,
+  ) => {
     setProductosDemo((prev) => {
       const copy = [...prev];
       copy[index] = {
         ...copy[index],
-        [field]: field === "cantidad" || field === "precio" ? Number(value) : value,
+        [field]:
+          field === "cantidad" || field === "precio" ? Number(value) : value,
       };
       return copy;
     });
@@ -92,7 +109,7 @@ const EtiquetasView: React.FC<EtiquetasViewProps> = ({ onBack }) => {
   // Función para guardar configuración
   const handleSave = async () => {
     setIsSaving(true);
-    
+
     localStorage.setItem("etiqueta_padding", padding);
     localStorage.setItem("etiqueta_comanda", comanda);
     localStorage.setItem("etiqueta_recibo", recibo);
@@ -100,8 +117,12 @@ const EtiquetasView: React.FC<EtiquetasViewProps> = ({ onBack }) => {
     localStorage.setItem("etiqueta_alto", alto);
     localStorage.setItem("etiqueta_fontSize", fontSize);
 
+    // Mostrar éxito inmediatamente (localStorage ya guardó)
+    showNotification("Configuración guardada correctamente", "success");
+
+    // Sincronizar con Supabase en segundo plano (no bloqueante)
     try {
-      const { error } = await supabase.from("etiquetas_config").upsert({
+      await supabase.from("etiquetas_config").upsert({
         nombre: "default",
         etiqueta_comanda: comanda,
         etiqueta_recibo: recibo,
@@ -111,14 +132,10 @@ const EtiquetasView: React.FC<EtiquetasViewProps> = ({ onBack }) => {
         etiqueta_padding: Number(padding),
         actualizado: new Date().toISOString(),
       });
-
-      if (!error) {
-        showNotification("Configuración guardada correctamente", "success");
-      } else {
-        showNotification(`Error al guardar: ${error.message}`, "error");
-      }
-    } catch (error) {
-      showNotification("Error inesperado al guardar", "error");
+    } catch {
+      console.warn(
+        "[EtiquetasView] No se pudo sincronizar con Supabase (offline)",
+      );
     } finally {
       setIsSaving(false);
     }
@@ -147,11 +164,11 @@ const EtiquetasView: React.FC<EtiquetasViewProps> = ({ onBack }) => {
       </div>
     `;
     document.body.appendChild(notification);
-    
+
     setTimeout(() => {
       notification.style.transform = "translateX(0)";
     }, 100);
-    
+
     setTimeout(() => {
       notification.style.transform = "translateX(400px)";
       setTimeout(() => {
@@ -161,7 +178,10 @@ const EtiquetasView: React.FC<EtiquetasViewProps> = ({ onBack }) => {
   };
 
   // Calcular total de productos
-  const total = productosDemo.reduce((sum, p) => sum + (p.precio * p.cantidad), 0);
+  const total = productosDemo.reduce(
+    (sum, p) => sum + p.precio * p.cantidad,
+    0,
+  );
 
   return (
     <div
@@ -173,7 +193,8 @@ const EtiquetasView: React.FC<EtiquetasViewProps> = ({ onBack }) => {
         width: "100vw",
         height: "100vh",
         background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
-        fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        fontFamily:
+          '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
         overflow: "hidden",
         zIndex: 9999,
       }}
@@ -384,15 +405,35 @@ const EtiquetasView: React.FC<EtiquetasViewProps> = ({ onBack }) => {
           <ChevronLeftIcon width={20} height={20} />
           Volver
         </button>
-        <div style={{ flex: 1, display: "flex", alignItems: "center", gap: "12px" }}>
+        <div
+          style={{
+            flex: 1,
+            display: "flex",
+            alignItems: "center",
+            gap: "12px",
+          }}
+        >
           <CogIcon width={24} height={24} style={{ color: "#60a5fa" }} />
-          <h1 style={{ color: "#e5e7eb", fontSize: "20px", fontWeight: "700", margin: 0 }}>
+          <h1
+            style={{
+              color: "#e5e7eb",
+              fontSize: "20px",
+              fontWeight: "700",
+              margin: 0,
+            }}
+          >
             Configuración de Etiquetas
           </h1>
         </div>
       </div>
 
-      <div style={{ display: "flex", height: "calc(100vh - 72px)", overflow: "hidden" }}>
+      <div
+        style={{
+          display: "flex",
+          height: "calc(100vh - 72px)",
+          overflow: "hidden",
+        }}
+      >
         {/* Panel de Configuración */}
         <div
           style={{
@@ -402,7 +443,10 @@ const EtiquetasView: React.FC<EtiquetasViewProps> = ({ onBack }) => {
             background: "rgba(31, 41, 55, 0.2)",
           }}
         >
-          <div className="card" style={{ maxWidth: "480px", marginBottom: "20px" }}>
+          <div
+            className="card"
+            style={{ maxWidth: "480px", marginBottom: "20px" }}
+          >
             <h2 className="section-header">Configuración General</h2>
             <div className="form-grid">
               <div className="form-group">
@@ -553,7 +597,13 @@ const EtiquetasView: React.FC<EtiquetasViewProps> = ({ onBack }) => {
                   />
                 </div>
                 <div className="productos-list">
-                  <div style={{ marginBottom: "10px", fontWeight: "600", color: "#d1d5db" }}>
+                  <div
+                    style={{
+                      marginBottom: "10px",
+                      fontWeight: "600",
+                      color: "#d1d5db",
+                    }}
+                  >
                     Productos de ejemplo:
                   </div>
                   {productosDemo.map((producto, index) => (
@@ -561,7 +611,9 @@ const EtiquetasView: React.FC<EtiquetasViewProps> = ({ onBack }) => {
                       <input
                         type="text"
                         value={producto.nombre}
-                        onChange={(e) => handleDemoChange(index, "nombre", e.target.value)}
+                        onChange={(e) =>
+                          handleDemoChange(index, "nombre", e.target.value)
+                        }
                         placeholder="Nombre del producto"
                         className="producto-input"
                         style={{ flex: "2" }}
@@ -570,7 +622,9 @@ const EtiquetasView: React.FC<EtiquetasViewProps> = ({ onBack }) => {
                         type="number"
                         value={producto.precio}
                         min={0}
-                        onChange={(e) => handleDemoChange(index, "precio", e.target.value)}
+                        onChange={(e) =>
+                          handleDemoChange(index, "precio", e.target.value)
+                        }
                         placeholder="Precio"
                         className="producto-input"
                         style={{ width: "80px" }}
@@ -579,7 +633,9 @@ const EtiquetasView: React.FC<EtiquetasViewProps> = ({ onBack }) => {
                         type="number"
                         value={producto.cantidad}
                         min={1}
-                        onChange={(e) => handleDemoChange(index, "cantidad", e.target.value)}
+                        onChange={(e) =>
+                          handleDemoChange(index, "cantidad", e.target.value)
+                        }
                         placeholder="Cant."
                         className="producto-input"
                         style={{ width: "60px" }}
@@ -607,9 +663,7 @@ const EtiquetasView: React.FC<EtiquetasViewProps> = ({ onBack }) => {
                     Agregar Producto
                   </button>
                 </div>
-                <div className="total-display">
-                  Total: L {total.toFixed(2)}
-                </div>
+                <div className="total-display">Total: L {total.toFixed(2)}</div>
                 <div className="preview-container">
                   <div
                     className="etiqueta-preview"

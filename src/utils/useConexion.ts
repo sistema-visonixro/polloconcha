@@ -8,22 +8,25 @@ import { useState, useEffect, useRef } from "react";
 // Variable global para cachear el estado de conexión real
 let ultimaVerificacionReal = {
   timestamp: 0,
-  conectado: true,
+  conectado: false,
 };
 
-const CACHE_DURATION = 3000; // 3 segundos de cache
+const CACHE_DURATION = 2000; // 2 segundos de cache
 
 /**
- * Verifica conexión real haciendo ping al endpoint de Supabase de la app
+ * Verifica conexión real haciendo ping al endpoint de Supabase.
+ * Solo se llama cuando navigator.onLine es true (para detectar "WiFi sin internet").
+ * Si navigator.onLine es false, retorna false inmediatamente.
  */
 async function verificarConexionRealConTimeout(): Promise<boolean> {
-  // Si no hay navigator.onLine, definitivamente sin internet
+  // DevTools Offline o cable desconectado pone esto en false directamente
   if (!navigator.onLine) {
-    console.log("❌ navigator.onLine = false");
+    ultimaVerificacionReal = { timestamp: Date.now(), conectado: false };
     return false;
   }
 
-  // Usar cache reciente para evitar checks excesivos
+  // navigator.onLine es true — podría ser "conectado al router pero sin internet"
+  // Usar cache reciente para no hacer pings excesivos
   const ahora = Date.now();
   if (ahora - ultimaVerificacionReal.timestamp < CACHE_DURATION) {
     return ultimaVerificacionReal.conectado;
@@ -34,12 +37,11 @@ async function verificarConexionRealConTimeout(): Promise<boolean> {
       (import.meta as any).env?.VITE_SUPABASE_URL ||
       "https://qxrdbsgktnyhigduhzcw.supabase.co";
 
-    // Timeout de 5 segundos
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
 
-    // Ping al endpoint de Supabase (no-cors para evitar problemas de CORS)
-    await fetch(`${supabaseUrl}/rest/v1/`, {
+    // Timestamp en URL para evitar cache HTTP del navegador
+    await fetch(`${supabaseUrl}/rest/v1/?_ts=${ahora}`, {
       method: "HEAD",
       mode: "no-cors",
       signal: controller.signal,
@@ -49,66 +51,78 @@ async function verificarConexionRealConTimeout(): Promise<boolean> {
     clearTimeout(timeoutId);
     ultimaVerificacionReal = { timestamp: ahora, conectado: true };
     return true;
-  } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : String(error);
-    // AbortError = timeout real; otros errores pueden ser CORS (conexión existe)
-    if (errorMsg.includes("abort") || errorMsg.includes("Abort")) {
-      ultimaVerificacionReal = { timestamp: ahora, conectado: false };
-      return false;
-    }
-    // Para errores de red distintos al abort, confiar en navigator.onLine
-    const resultado = navigator.onLine;
-    ultimaVerificacionReal = { timestamp: ahora, conectado: resultado };
-    return resultado;
+  } catch (_) {
+    // Cualquier error (NetworkError, AbortError/timeout) = sin internet real
+    ultimaVerificacionReal = { timestamp: Date.now(), conectado: false };
+    return false;
   }
 }
 
 export function useConexion() {
+  // navigator.onLine es false inmediatamente cuando DevTools Offline está activo
+  // o cuando se desconecta el cable/WiFi — es la fuente más rápida y confiable
   const [conectado, setConectado] = useState<boolean>(navigator.onLine);
   const [intentandoReconectar, setIntentandoReconectar] =
     useState<boolean>(false);
   const verificacionIntervalRef = useRef<number | null>(null);
+  const conectadoRef = useRef<boolean>(navigator.onLine);
+
+  // Mantener ref sincronizada para usarla en el interval sin stale closure
+  useEffect(() => {
+    conectadoRef.current = conectado;
+  }, [conectado]);
 
   useEffect(() => {
-    // Verificar conexión real inicialmente
-    verificarConexionRealConTimeout().then(setConectado);
-
-    function manejarOnline() {
-      console.log("📡 Navigator detectó conexión, verificando...");
-      // Verificar conexión real antes de confirmar
+    // Si navigator.onLine es true al montar, verificar que hay internet real
+    // (caso: WiFi conectado pero sin internet). Si ya es false, no hacer ping.
+    if (navigator.onLine) {
       verificarConexionRealConTimeout().then((real) => {
-        if (real) {
-          console.log("✓ Conexión real confirmada");
-          setConectado(true);
-          setIntentandoReconectar(false);
-        } else {
-          console.warn("⚠ Navigator.onLine true pero sin acceso real");
+        if (!real) {
           setConectado(false);
+          conectadoRef.current = false;
         }
       });
     }
 
+    function manejarOnline() {
+      // navigator.onLine cambió a true — verificar que hay internet real
+      verificarConexionRealConTimeout().then((real) => {
+        setConectado(real);
+        conectadoRef.current = real;
+        setIntentandoReconectar(!real);
+      });
+    }
+
     function manejarOffline() {
-      console.warn("⚠ Conexión perdida (navigator.onLine)");
+      // navigator.onLine cambió a false — sin internet, sin ping necesario
       setConectado(false);
+      conectadoRef.current = false;
       setIntentandoReconectar(true);
+      ultimaVerificacionReal = { timestamp: Date.now(), conectado: false };
     }
 
     window.addEventListener("online", manejarOnline);
     window.addEventListener("offline", manejarOffline);
 
-    // Verificar conexión real cada 5 segundos
-    verificacionIntervalRef.current = setInterval(() => {
+    // Ping periódico cada 8s solo cuando creemos estar conectados
+    // (para detectar pérdida de internet sin que navigator.onLine cambie)
+    verificacionIntervalRef.current = window.setInterval(() => {
+      if (!navigator.onLine) {
+        if (conectadoRef.current) {
+          setConectado(false);
+          conectadoRef.current = false;
+          setIntentandoReconectar(true);
+        }
+        return;
+      }
       verificarConexionRealConTimeout().then((real) => {
-        if (real !== conectado) {
-          console.log(
-            `🔄 Estado de conexión cambió: ${real ? "CONECTADO" : "DESCONECTADO"}`,
-          );
+        if (real !== conectadoRef.current) {
           setConectado(real);
+          conectadoRef.current = real;
           setIntentandoReconectar(!real);
         }
       });
-    }, 5000);
+    }, 8000);
 
     return () => {
       window.removeEventListener("online", manejarOnline);
@@ -117,7 +131,7 @@ export function useConexion() {
         clearInterval(verificacionIntervalRef.current);
       }
     };
-  }, [conectado]);
+  }, []); // Sin dependencias: solo corre una vez al montar
 
   return { conectado, intentandoReconectar };
 }

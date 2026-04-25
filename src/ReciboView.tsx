@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from "react";
 import { supabase } from "./supabaseClient";
-import { 
-  ChevronLeftIcon, 
-  ScaleIcon, 
-  PlusIcon, 
-  TrashIcon, 
+import {
+  ChevronLeftIcon,
+  ScaleIcon,
+  PlusIcon,
+  TrashIcon,
   EyeIcon,
-  ReceiptPercentIcon
+  ReceiptPercentIcon,
 } from "@heroicons/react/24/outline";
 
 interface ReciboViewProps {
@@ -22,16 +22,26 @@ interface ProductoDemo {
 
 const ReciboView: React.FC<ReciboViewProps> = ({ onBack }) => {
   // Estados principales
-  const [padding, setPadding] = useState(() => localStorage.getItem("recibo_padding") || "8");
+  const [padding, setPadding] = useState(
+    () => localStorage.getItem("recibo_padding") || "8",
+  );
   const [clienteDemo, setClienteDemo] = useState("Cliente de ejemplo");
   const [productosDemo, setProductosDemo] = useState<ProductoDemo[]>([
     { id: "1", nombre: "Pollo Asado", precio: 120, cantidad: 1 },
     { id: "2", nombre: "Papas Fritas", precio: 45, cantidad: 2 },
   ]);
-  const [recibo, setRecibo] = useState(() => localStorage.getItem("recibo_texto") || "");
-  const [ancho, setAncho] = useState(() => localStorage.getItem("recibo_ancho") || "58");
-  const [alto, setAlto] = useState(() => localStorage.getItem("recibo_alto") || "40");
-  const [fontSize, setFontSize] = useState(() => localStorage.getItem("recibo_fontsize") || "14");
+  const [recibo, setRecibo] = useState(
+    () => localStorage.getItem("recibo_texto") || "",
+  );
+  const [ancho, setAncho] = useState(
+    () => localStorage.getItem("recibo_ancho") || "58",
+  );
+  const [alto, setAlto] = useState(
+    () => localStorage.getItem("recibo_alto") || "40",
+  );
+  const [fontSize, setFontSize] = useState(
+    () => localStorage.getItem("recibo_fontsize") || "14",
+  );
   const [isSaving, setIsSaving] = useState(false);
   const [showPreview, setShowPreview] = useState(true);
 
@@ -44,7 +54,7 @@ const ReciboView: React.FC<ReciboViewProps> = ({ onBack }) => {
           .select("*")
           .eq("nombre", "default")
           .single();
-        
+
         if (data && !error) {
           setRecibo(data.recibo_texto || "");
           setAncho(data.recibo_ancho?.toString() || "58");
@@ -60,12 +70,17 @@ const ReciboView: React.FC<ReciboViewProps> = ({ onBack }) => {
   }, []);
 
   // Funciones para productos demo
-  const handleDemoChange = (index: number, field: keyof ProductoDemo, value: string | number) => {
+  const handleDemoChange = (
+    index: number,
+    field: keyof ProductoDemo,
+    value: string | number,
+  ) => {
     setProductosDemo((prev) => {
       const copy = [...prev];
       copy[index] = {
         ...copy[index],
-        [field]: field === "cantidad" || field === "precio" ? Number(value) : value,
+        [field]:
+          field === "cantidad" || field === "precio" ? Number(value) : value,
       };
       return copy;
     });
@@ -90,15 +105,19 @@ const ReciboView: React.FC<ReciboViewProps> = ({ onBack }) => {
   // Función para guardar configuración
   const handleSave = async () => {
     setIsSaving(true);
-    
+
     localStorage.setItem("recibo_padding", padding);
     localStorage.setItem("recibo_texto", recibo);
     localStorage.setItem("recibo_ancho", ancho);
     localStorage.setItem("recibo_alto", alto);
     localStorage.setItem("recibo_fontsize", fontSize);
 
+    // Mostrar éxito inmediatamente (localStorage ya guardó)
+    showNotification("Configuración guardada correctamente", "success");
+
+    // Sincronizar con Supabase en segundo plano (no bloqueante)
     try {
-      const { error } = await supabase.from("recibo_config").upsert({
+      await supabase.from("recibo_config").upsert({
         nombre: "default",
         recibo_texto: recibo,
         recibo_ancho: Number(ancho),
@@ -107,14 +126,10 @@ const ReciboView: React.FC<ReciboViewProps> = ({ onBack }) => {
         recibo_padding: Number(padding),
         actualizado: new Date().toISOString(),
       });
-
-      if (!error) {
-        showNotification("Configuración guardada correctamente", "success");
-      } else {
-        showNotification(`Error al guardar: ${error.message}`, "error");
-      }
-    } catch (error) {
-      showNotification("Error inesperado al guardar", "error");
+    } catch {
+      console.warn(
+        "[ReciboView] No se pudo sincronizar con Supabase (offline)",
+      );
     } finally {
       setIsSaving(false);
     }
@@ -143,11 +158,11 @@ const ReciboView: React.FC<ReciboViewProps> = ({ onBack }) => {
       </div>
     `;
     document.body.appendChild(notification);
-    
+
     setTimeout(() => {
       notification.style.transform = "translateX(0)";
     }, 100);
-    
+
     setTimeout(() => {
       notification.style.transform = "translateX(400px)";
       setTimeout(() => {
@@ -157,7 +172,10 @@ const ReciboView: React.FC<ReciboViewProps> = ({ onBack }) => {
   };
 
   // Calcular total de productos
-  const total = productosDemo.reduce((sum, p) => sum + (p.precio * p.cantidad), 0);
+  const total = productosDemo.reduce(
+    (sum, p) => sum + p.precio * p.cantidad,
+    0,
+  );
 
   return (
     <div
@@ -169,7 +187,8 @@ const ReciboView: React.FC<ReciboViewProps> = ({ onBack }) => {
         width: "100vw",
         height: "100vh",
         background: "linear-gradient(135deg, #1e293b 0%, #0f172a 100%)",
-        fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        fontFamily:
+          '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
         overflow: "hidden",
         zIndex: 9999,
       }}
@@ -394,15 +413,39 @@ const ReciboView: React.FC<ReciboViewProps> = ({ onBack }) => {
           <ChevronLeftIcon width={20} height={20} />
           Volver
         </button>
-        <div style={{ flex: 1, display: "flex", alignItems: "center", gap: "12px" }}>
-          <ReceiptPercentIcon width={24} height={24} style={{ color: "#60a5fa" }} />
-          <h1 style={{ color: "#e5e7eb", fontSize: "20px", fontWeight: "700", margin: 0 }}>
+        <div
+          style={{
+            flex: 1,
+            display: "flex",
+            alignItems: "center",
+            gap: "12px",
+          }}
+        >
+          <ReceiptPercentIcon
+            width={24}
+            height={24}
+            style={{ color: "#60a5fa" }}
+          />
+          <h1
+            style={{
+              color: "#e5e7eb",
+              fontSize: "20px",
+              fontWeight: "700",
+              margin: 0,
+            }}
+          >
             Configuración de Recibo
           </h1>
         </div>
       </div>
 
-      <div style={{ display: "flex", height: "calc(100vh - 72px)", overflow: "hidden" }}>
+      <div
+        style={{
+          display: "flex",
+          height: "calc(100vh - 72px)",
+          overflow: "hidden",
+        }}
+      >
         {/* Panel de Configuración */}
         <div
           style={{
@@ -412,7 +455,10 @@ const ReciboView: React.FC<ReciboViewProps> = ({ onBack }) => {
             background: "rgba(31, 41, 55, 0.2)",
           }}
         >
-          <div className="card" style={{ maxWidth: "480px", marginBottom: "20px" }}>
+          <div
+            className="card"
+            style={{ maxWidth: "480px", marginBottom: "20px" }}
+          >
             <h2 className="section-header">Configuración General</h2>
             <div className="form-grid">
               <div className="form-group">
@@ -553,7 +599,13 @@ const ReciboView: React.FC<ReciboViewProps> = ({ onBack }) => {
                   />
                 </div>
                 <div className="productos-list">
-                  <div style={{ marginBottom: "10px", fontWeight: "600", color: "#d1d5db" }}>
+                  <div
+                    style={{
+                      marginBottom: "10px",
+                      fontWeight: "600",
+                      color: "#d1d5db",
+                    }}
+                  >
                     Productos de ejemplo:
                   </div>
                   {productosDemo.map((producto, index) => (
@@ -561,7 +613,9 @@ const ReciboView: React.FC<ReciboViewProps> = ({ onBack }) => {
                       <input
                         type="text"
                         value={producto.nombre}
-                        onChange={(e) => handleDemoChange(index, "nombre", e.target.value)}
+                        onChange={(e) =>
+                          handleDemoChange(index, "nombre", e.target.value)
+                        }
                         placeholder="Nombre del producto"
                         className="producto-input"
                         style={{ flex: "2" }}
@@ -570,7 +624,9 @@ const ReciboView: React.FC<ReciboViewProps> = ({ onBack }) => {
                         type="number"
                         value={producto.precio}
                         min={0}
-                        onChange={(e) => handleDemoChange(index, "precio", e.target.value)}
+                        onChange={(e) =>
+                          handleDemoChange(index, "precio", e.target.value)
+                        }
                         placeholder="Precio"
                         className="producto-input"
                         style={{ width: "80px" }}
@@ -579,7 +635,9 @@ const ReciboView: React.FC<ReciboViewProps> = ({ onBack }) => {
                         type="number"
                         value={producto.cantidad}
                         min={1}
-                        onChange={(e) => handleDemoChange(index, "cantidad", e.target.value)}
+                        onChange={(e) =>
+                          handleDemoChange(index, "cantidad", e.target.value)
+                        }
                         placeholder="Cant."
                         className="producto-input"
                         style={{ width: "60px" }}
@@ -607,9 +665,7 @@ const ReciboView: React.FC<ReciboViewProps> = ({ onBack }) => {
                     Agregar Producto
                   </button>
                 </div>
-                <div className="total-display">
-                  Total: L {total.toFixed(2)}
-                </div>
+                <div className="total-display">Total: L {total.toFixed(2)}</div>
                 <div className="preview-container">
                   <div
                     className="recibo-preview"
@@ -647,16 +703,34 @@ const ReciboView: React.FC<ReciboViewProps> = ({ onBack }) => {
                     >
                       {clienteDemo}
                     </div>
-                    <table className="recibo-table" style={{ marginBottom: "12px" }}>
+                    <table
+                      className="recibo-table"
+                      style={{ marginBottom: "12px" }}
+                    >
                       <thead>
                         <tr>
-                          <th style={{ textAlign: "left", fontSize: `${parseInt(fontSize) * 0.9}px` }}>
+                          <th
+                            style={{
+                              textAlign: "left",
+                              fontSize: `${parseInt(fontSize) * 0.9}px`,
+                            }}
+                          >
                             Producto
                           </th>
-                          <th style={{ textAlign: "center", fontSize: `${parseInt(fontSize) * 0.9}px` }}>
+                          <th
+                            style={{
+                              textAlign: "center",
+                              fontSize: `${parseInt(fontSize) * 0.9}px`,
+                            }}
+                          >
                             Cant
                           </th>
-                          <th style={{ textAlign: "right", fontSize: `${parseInt(fontSize) * 0.9}px` }}>
+                          <th
+                            style={{
+                              textAlign: "right",
+                              fontSize: `${parseInt(fontSize) * 0.9}px`,
+                            }}
+                          >
                             Total
                           </th>
                         </tr>
@@ -664,13 +738,28 @@ const ReciboView: React.FC<ReciboViewProps> = ({ onBack }) => {
                       <tbody>
                         {productosDemo.map((p) => (
                           <tr key={p.id}>
-                            <td style={{ fontWeight: "500", fontSize: `${parseInt(fontSize) * 0.9}px` }}>
+                            <td
+                              style={{
+                                fontWeight: "500",
+                                fontSize: `${parseInt(fontSize) * 0.9}px`,
+                              }}
+                            >
                               {p.nombre}
                             </td>
-                            <td style={{ textAlign: "center", fontSize: `${parseInt(fontSize) * 0.9}px` }}>
+                            <td
+                              style={{
+                                textAlign: "center",
+                                fontSize: `${parseInt(fontSize) * 0.9}px`,
+                              }}
+                            >
                               {p.cantidad}
                             </td>
-                            <td style={{ textAlign: "right", fontSize: `${parseInt(fontSize) * 0.9}px` }}>
+                            <td
+                              style={{
+                                textAlign: "right",
+                                fontSize: `${parseInt(fontSize) * 0.9}px`,
+                              }}
+                            >
                               L {(p.precio * p.cantidad).toFixed(2)}
                             </td>
                           </tr>

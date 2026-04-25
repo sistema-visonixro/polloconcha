@@ -4,6 +4,7 @@
  */
 
 import { supabase } from "../supabaseClient";
+import { upsertOne, getByIndex, STORE } from "./localDB";
 
 // Nombre de la base de datos
 const DB_NAME = "PuntoVentaOfflineDB";
@@ -1618,6 +1619,54 @@ export async function guardarAperturaCache(
     estado: apertura.estado,
   });
 
+  // Guardar en STORE.CIERRES (fuente primaria de localDB) para que
+  // fetchHistorialVentas, fetchResumenCaja y calcularResumenTurno lo encuentren.
+  // Solo pisar si: IDB está vacío, o el registro existente es más viejo que esta apertura.
+  try {
+    const existentes = await getByIndex(
+      STORE.CIERRES,
+      "cajero_id",
+      apertura.cajero_id,
+    );
+    const masReciente = existentes.sort(
+      (a: any, b: any) =>
+        new Date(b.fecha ?? 0).getTime() - new Date(a.fecha ?? 0).getTime(),
+    )[0];
+
+    // Si el registro más reciente en IDB es un CIERRE y es más nuevo que esta apertura
+    // → esta apertura es un sync tardío de datos viejos, no pisar el cierre
+    const tsApertura = new Date(apertura.fecha ?? 0).getTime();
+    const tsMasReciente = masReciente
+      ? new Date(masReciente.fecha ?? 0).getTime()
+      : 0;
+    const cierreEsMasReciente =
+      masReciente &&
+      masReciente.estado === "CIERRE" &&
+      tsMasReciente >= tsApertura;
+
+    if (cierreEsMasReciente) {
+      console.log(
+        "[guardarAperturaCache] CIERRE activo más reciente en IDB → apertura de Supabase no pisa",
+      );
+    } else {
+      const numId = parseInt(apertura.id as string);
+      const aperturaIDB = {
+        id: Number.isFinite(numId) && numId > 0 ? numId : -Date.now(),
+        cajero_id: apertura.cajero_id,
+        cajero: (apertura as any).cajero || "",
+        caja: apertura.caja,
+        fecha: apertura.fecha,
+        estado: "APERTURA",
+      };
+      await upsertOne(STORE.CIERRES, aperturaIDB);
+    }
+  } catch (e) {
+    console.warn(
+      "[offlineSync] No se pudo guardar apertura en STORE.CIERRES:",
+      e,
+    );
+  }
+
   const database = await initIndexedDB();
 
   return new Promise((resolve, reject) => {
@@ -1984,7 +2033,7 @@ export async function guardarVentaLocal(
 ): Promise<number> {
   const database = await initIndexedDB();
 
-  return new Promise((resolve, reject) => {
+  const localId = await new Promise<number>((resolve, reject) => {
     const transaction = database.transaction([VENTAS_STORE], "readwrite");
     const store = transaction.objectStore(VENTAS_STORE);
 
@@ -2008,6 +2057,17 @@ export async function guardarVentaLocal(
       reject(request.error);
     };
   });
+
+  // Guardar también en STORE.VENTAS (fuente primaria para resumen e historial offline)
+  try {
+    const tempId =
+      typeof (venta as any).id === "number" ? (venta as any).id : -Date.now();
+    await upsertOne(STORE.VENTAS, { ...venta, id: tempId });
+  } catch (e) {
+    console.warn("[offlineSync] No se pudo guardar venta en STORE.VENTAS:", e);
+  }
+
+  return localId;
 }
 
 /**

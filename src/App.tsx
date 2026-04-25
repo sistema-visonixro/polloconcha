@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import CierresAdminView from "./CierresAdminView";
 import Login from "./Login";
 import CajaOperadaView from "./CajaOperadaView";
@@ -26,6 +26,13 @@ import ProveedoresCxPView from "./ProveedoresCxPView";
 import { useDatosNegocio } from "./useDatosNegocio";
 import "./App.css";
 import { supabase } from "./supabaseClient";
+import {
+  inicializarAppOffline,
+  procesarColaEscrituras,
+  sincronizarTodoDesdeSupabase,
+  subirVentasPendientesIDB,
+} from "./utils/localDB";
+import type { SyncProgress } from "./utils/localDB";
 
 // Asumimos que supabase está disponible globalmente o importado; si no, agrégalo como import
 // import { supabase } from './supabase'; // Descomenta y ajusta si es necesario
@@ -33,6 +40,77 @@ import { supabase } from "./supabaseClient";
 function App() {
   // Cargar datos del negocio para actualizar título y favicon
   useDatosNegocio();
+
+  // ── Inicialización offline-first ──────────────────────────────────────────
+  const [idbReady, setIdbReady] = useState(false);
+  const [idbStatus, setIdbStatus] = useState<
+    "" | "syncing" | "offline_no_data"
+  >("syncing");
+  // Modal de sincronización en curso (F5 / focus)
+  const [syncingModal, setSyncingModal] = useState(false);
+  const [syncProgress, setSyncProgress] = useState(0);
+  const [syncTabla, setSyncTabla] = useState("");
+  const syncInProgress = useRef(false);
+
+  // Función reutilizable para sincronizar con progreso visual
+  const runSync = async () => {
+    if (syncInProgress.current) return;
+    syncInProgress.current = true;
+    setSyncingModal(true);
+    setSyncProgress(0);
+    setSyncTabla("");
+    const tablasTotal = 20; // aprox total de tablas
+    let idx = 0;
+    try {
+      // Primero subir ventas offline (id negativo) antes del clearStore del sync
+      await subirVentasPendientesIDB().catch(() => {});
+      await sincronizarTodoDesdeSupabase((p: SyncProgress) => {
+        idx++;
+        setSyncTabla(p.tabla);
+        setSyncProgress(Math.min(99, Math.round((idx / tablasTotal) * 100)));
+      });
+      await procesarColaEscrituras();
+      setSyncProgress(100);
+      await new Promise((r) => setTimeout(r, 700));
+    } catch (_) {
+      /* silencioso */
+    } finally {
+      setSyncingModal(false);
+      setSyncProgress(0);
+      setSyncTabla("");
+      syncInProgress.current = false;
+    }
+  };
+
+  useEffect(() => {
+    inicializarAppOffline((p) => {
+      console.log(`[init] ${p.tabla}: ${p.filas} filas (${p.status})`);
+    })
+      .then((resultado) => {
+        if (resultado === "offline_no_data") {
+          setIdbStatus("offline_no_data");
+        } else {
+          setIdbStatus("");
+        }
+        setIdbReady(true);
+      })
+      .catch(() => {
+        setIdbReady(true);
+        setIdbStatus("");
+      });
+
+    // Procesar cola cuando la app tiene foco (por si hubo escrituras offline)
+    const handleFocus = () => {
+      if (navigator.onLine) {
+        runSync();
+      } else {
+        procesarColaEscrituras().catch(() => {});
+      }
+    };
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
+  }, []);
+  // ─────────────────────────────────────────────────────────────────────────
 
   const [user, setUser] = useState<any>(() => {
     const stored = localStorage.getItem("usuario");
@@ -288,6 +366,90 @@ function App() {
   }, [view]);
 
   // Render condicional
+  // Pantalla de inicialización (primer arranque con IDB vacío)
+  if (!idbReady) {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          background:
+            "linear-gradient(135deg,#071029 0%,#09243d 50%,#073b5b 100%)",
+          color: "#fff",
+          gap: 16,
+        }}
+      >
+        <div style={{ fontSize: 48 }}>🥩</div>
+        <p style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>
+          Inicializando sistema...
+        </p>
+        <p style={{ fontSize: 13, opacity: 0.6, margin: 0 }}>
+          Sincronizando datos locales
+        </p>
+        <div
+          style={{
+            width: 40,
+            height: 40,
+            border: "4px solid #fff3",
+            borderTop: "4px solid #fff",
+            borderRadius: "50%",
+            animation: "spin 0.9s linear infinite",
+          }}
+        />
+        <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+      </div>
+    );
+  }
+
+  if (idbStatus === "offline_no_data") {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          background:
+            "linear-gradient(135deg,#071029 0%,#09243d 50%,#073b5b 100%)",
+          color: "#fff",
+          gap: 16,
+          padding: 24,
+          textAlign: "center",
+        }}
+      >
+        <div style={{ fontSize: 48 }}>📡</div>
+        <p style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>
+          Sin conexión a internet
+        </p>
+        <p style={{ fontSize: 14, opacity: 0.75, maxWidth: 320 }}>
+          Es la primera vez que abre la app en este dispositivo.
+          <br />
+          Conéctese a internet para descargar los datos iniciales.
+        </p>
+        <button
+          onClick={() => window.location.reload()}
+          style={{
+            marginTop: 12,
+            padding: "10px 28px",
+            borderRadius: 8,
+            border: "none",
+            background: "#1976d2",
+            color: "#fff",
+            fontWeight: 700,
+            fontSize: 15,
+            cursor: "pointer",
+          }}
+        >
+          Reintentar
+        </button>
+      </div>
+    );
+  }
+
   if (!user) {
     return <Login onLogin={handleLogin} />;
   }
@@ -495,7 +657,11 @@ function App() {
   if (view === "apertura" && user?.rol === "cajero") {
     return (
       <>
-        <AperturaView usuarioActual={user} caja={cajaApertura} />
+        <AperturaView
+          usuarioActual={user}
+          caja={cajaApertura}
+          onAperturaGuardada={() => setView("puntoDeVenta")}
+        />
         <VersionComponent />
         <div style={{ textAlign: "center", marginTop: 20 }}></div>
       </>
@@ -551,6 +717,70 @@ function App() {
   // Vista por defecto (home) - puedes agregar un componente Home si existe
   return (
     <>
+      {/* Modal de sincronización en progreso (F5 / reconexión) */}
+      {syncingModal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 9999,
+            background: "rgba(0,0,0,0.75)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <div
+            style={{
+              background: "#0d1b2a",
+              color: "#fff",
+              borderRadius: 16,
+              padding: "36px 40px",
+              minWidth: 320,
+              textAlign: "center",
+              boxShadow: "0 8px 40px rgba(0,0,0,0.5)",
+            }}
+          >
+            <div style={{ fontSize: 40, marginBottom: 12 }}>🔄</div>
+            <p style={{ fontWeight: 700, fontSize: 18, margin: "0 0 6px" }}>
+              Actualizando datos locales
+            </p>
+            <p
+              style={{
+                fontSize: 12,
+                opacity: 0.6,
+                margin: "0 0 18px",
+                minHeight: 18,
+              }}
+            >
+              {syncTabla ? `Tabla: ${syncTabla}` : "Preparando..."}
+            </p>
+            {/* Barra de progreso */}
+            <div
+              style={{
+                background: "#1e3a5f",
+                borderRadius: 8,
+                height: 12,
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  height: "100%",
+                  borderRadius: 8,
+                  background: "linear-gradient(90deg,#1976d2,#42a5f5)",
+                  width: `${syncProgress}%`,
+                  transition: "width 0.3s ease",
+                }}
+              />
+            </div>
+            <p style={{ marginTop: 10, fontSize: 15, fontWeight: 700 }}>
+              {syncProgress}%
+            </p>
+          </div>
+        </div>
+      )}
+
       <div style={{ textAlign: "center", marginTop: 40 }}>
         <p
           style={{

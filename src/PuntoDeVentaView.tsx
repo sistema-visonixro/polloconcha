@@ -12,7 +12,6 @@ import {
 
   // obtenerContadorPendientes,
   sincronizarTodo,
-  eliminarGastoLocal,
   eliminarEnvioLocal,
   obtenerEnviosPendientes,
   actualizarCacheProductos,
@@ -25,6 +24,7 @@ import {
   limpiarAperturaCache,
   obtenerAperturaLocalStorage,
   guardarAperturaLocalStorage,
+  limpiarAperturaLocalStorage,
   sincronizarAperturaPendiente,
   guardarCaiCache,
   obtenerCaiCache,
@@ -33,6 +33,16 @@ import {
   obtenerVentasPendientes as _obtenerVentasPendientes,
 } from "./utils/offlineSync";
 import { migrarPagosDesdeLocalStorage } from "./utils/migrarLocalStorage";
+import {
+  STORE,
+  getAll,
+  getByIndex,
+  upsertOne,
+  deleteById,
+  calcularResumenTurno,
+  getPrecioDolarLocal,
+  getUsuariosLocal,
+} from "./utils/localDB";
 import { useConexion } from "./utils/useConexion";
 import CreditoClienteModal from "./CreditoClienteModal";
 import PagoCreditoPOSModal from "./PagoCreditoPOSModal";
@@ -500,6 +510,24 @@ export default function PuntoDeVentaView({
         } catch {
           /* non-critical */
         }
+
+        // Actualizar STORE.CAI_FACTURAS en IDB (fuente primaria offline)
+        try {
+          const caiRows = await getAll<any>(STORE.CAI_FACTURAS);
+          const caiRec = caiRows.find(
+            (r) =>
+              r.cajero_id === usuarioActual?.id &&
+              r.tipo_comprobante === "RECIBO",
+          );
+          if (caiRec) {
+            await upsertOne(STORE.CAI_FACTURAS, {
+              ...caiRec,
+              factura_actual: nuevaFactura,
+            });
+          }
+        } catch {
+          /* non-critical */
+        }
       }
 
       setSeleccionados([]);
@@ -514,6 +542,109 @@ export default function PuntoDeVentaView({
     setShowResumen(true);
     setResumenLoading(true);
     try {
+      // ── IDB primero (siempre, sin depender de navigator.onLine) ──────────
+      {
+        const cierresIDB = await getByIndex<any>(
+          STORE.CIERRES,
+          "cajero_id",
+          usuarioActual?.id,
+        );
+        let aperturaIDB: any =
+          cierresIDB
+            .filter((c) => c.estado === "APERTURA")
+            .sort(
+              (a, b) =>
+                new Date(b.fecha ?? 0).getTime() -
+                new Date(a.fecha ?? 0).getTime(),
+            )[0] ?? null;
+
+        // Fallback: buscar en localStorage / apertura_cache y sincronizar en STORE.CIERRES
+        if (!aperturaIDB) {
+          const lsAp = obtenerAperturaLocalStorage();
+          const cachedAp =
+            lsAp?.cajero_id === usuarioActual?.id
+              ? lsAp
+              : await obtenerAperturaCache()
+                  .then((c) => (c?.cajero_id === usuarioActual?.id ? c : null))
+                  .catch(() => null);
+          if (cachedAp) {
+            const numId =
+              parseInt(cachedAp.id as string) > 0
+                ? parseInt(cachedAp.id as string)
+                : -Date.now();
+            aperturaIDB = {
+              id: numId,
+              cajero_id: cachedAp.cajero_id,
+              cajero: (cachedAp as any).cajero || "",
+              caja: cachedAp.caja,
+              fecha: cachedAp.fecha,
+              estado: "APERTURA",
+            };
+            await upsertOne(STORE.CIERRES, aperturaIDB);
+            console.log(
+              "✓ Apertura rescatada de cache y guardada en STORE.CIERRES",
+            );
+          }
+        }
+
+        if (aperturaIDB) {
+          const resumenIDB = await calcularResumenTurno(
+            aperturaIDB.id,
+            usuarioActual!.id,
+          );
+          if (!resumenIDB) {
+            setResumenLoading(false);
+            alert("No se pudo calcular el resumen desde IDB.");
+            setShowResumen(false);
+            return;
+          }
+
+          const tasa = await getPrecioDolarLocal();
+          const dolaresConvertidos = Number(
+            (resumenIDB.dolares_usd * tasa).toFixed(2),
+          );
+
+          // Calcular delivery desde IDB
+          const ventasIDB = await getByIndex<any>(
+            STORE.VENTAS,
+            "cajero_id",
+            usuarioActual!.id,
+          );
+          const tsAp = new Date(aperturaIDB.fecha ?? 0).getTime();
+          const deliverySum = ventasIDB
+            .filter((v) => {
+              const ts = new Date(v.fecha_hora ?? 0).getTime();
+              return ts >= tsAp && v.tipo !== "CREDITO";
+            })
+            .reduce((acc, v) => acc + parseFloat(v.delivery || 0), 0);
+
+          setResumenData({
+            efectivo: Number(
+              (resumenIDB.efectivo_bruto - resumenIDB.cambio_devuelto).toFixed(
+                2,
+              ),
+            ),
+            tarjeta: resumenIDB.tarjeta,
+            transferencia: resumenIDB.transferencia,
+            dolares: resumenIDB.dolares_lps,
+            dolares_usd: resumenIDB.dolares_usd,
+            dolares_convertidos: dolaresConvertidos,
+            tasa_dolar: tasa,
+            gastos: resumenIDB.gastos,
+            cambio: resumenIDB.cambio_devuelto,
+            delivery: deliverySum,
+            platillos: resumenIDB.platillos_vendidos,
+            bebidas: resumenIDB.bebidas_vendidas,
+            platillos_donados: resumenIDB.platillos_donados,
+            bebidas_donadas: resumenIDB.bebidas_donadas,
+          });
+          setResumenLoading(false);
+          return;
+        }
+        // aperturaIDB no encontrada → caer al bloque Supabase abajo
+      }
+
+      // ── MODO ONLINE: Supabase ─────────────────────────────────────────────
       // Buscar la fecha de apertura del día actual para filtrar desde ese momento
       const { end: dayEnd, day } = getLocalDayRange();
 
@@ -660,15 +791,16 @@ export default function PuntoDeVentaView({
         const dlU = parseFloat(r.dolares_usd || 0);
         const cb = parseFloat(r.cambio || 0);
         const dv = parseFloat(r.delivery || 0);
-        const esDevolucion = r.tipo === "DEVOLUCION";
 
         efectivoSumBruto += ef;
         tarjetaSum += tk;
         transSum += tr;
         dolaresSum += dl;
         dolaresSumUsd += dlU;
-        // El cambio solo aplica a ventas normales (no devoluciones)
-        if (!esDevolucion) cambioSum += cb;
+        // Sumar cambio de TODAS las filas (igual que la vista SQL).
+        // Las devoluciones nuevas tienen cambio=0, por lo que no afectan.
+        // Esto mantiene consistencia con v_resumen_turnos.
+        cambioSum += cb;
         deliverySum += dv;
       }
 
@@ -776,6 +908,116 @@ export default function PuntoDeVentaView({
     setShowHistorialVentas(true);
     setHistorialLoading(true);
     try {
+      // ── IDB primero (siempre, sin depender de navigator.onLine) ──────────
+      {
+        const cierresIDB = await getByIndex<any>(
+          STORE.CIERRES,
+          "cajero_id",
+          usuarioActual?.id,
+        );
+        let aperturaIDB: any =
+          cierresIDB
+            .filter((c) => c.estado === "APERTURA")
+            .sort(
+              (a, b) =>
+                new Date(b.fecha ?? 0).getTime() -
+                new Date(a.fecha ?? 0).getTime(),
+            )[0] ?? null;
+        if (!aperturaIDB) {
+          const lsAp = obtenerAperturaLocalStorage();
+          // Aceptar apertura de localStorage aunque usuarioActual sea null (race condition tras F5)
+          const lsMatch =
+            lsAp && (!usuarioActual?.id || lsAp.cajero_id === usuarioActual.id)
+              ? lsAp
+              : null;
+          const cachedAp =
+            lsMatch ??
+            (await obtenerAperturaCache()
+              .then((c) =>
+                c && (!usuarioActual?.id || c.cajero_id === usuarioActual.id)
+                  ? c
+                  : null,
+              )
+              .catch(() => null));
+          if (cachedAp) {
+            const numId =
+              parseInt(cachedAp.id as string) > 0
+                ? parseInt(cachedAp.id as string)
+                : -Date.now();
+            aperturaIDB = {
+              id: numId,
+              cajero_id: cachedAp.cajero_id,
+              cajero: (cachedAp as any).cajero || "",
+              caja: cachedAp.caja,
+              fecha: cachedAp.fecha,
+              estado: "APERTURA",
+            };
+            await upsertOne(STORE.CIERRES, aperturaIDB);
+          }
+        }
+        if (aperturaIDB) {
+          const cajeroIdFinal = aperturaIDB.cajero_id ?? usuarioActual?.id;
+          const tsAp = new Date(aperturaIDB.fecha ?? 0).getTime();
+          const todasVentas = cajeroIdFinal
+            ? await getByIndex<any>(STORE.VENTAS, "cajero_id", cajeroIdFinal)
+            : await getAll<any>(STORE.VENTAS);
+          const ventasTurno = todasVentas
+            .filter((v) => {
+              const ts = new Date(v.fecha_hora ?? 0).getTime();
+              return (
+                ts >= tsAp && v.tipo !== "CREDITO" && v.tipo !== "DEVOLUCION"
+              );
+            })
+            .sort(
+              (a, b) =>
+                new Date(b.fecha_hora ?? 0).getTime() -
+                new Date(a.fecha_hora ?? 0).getTime(),
+            );
+          setHistorialVentas(ventasTurno);
+          // Normalizar pagos desde IDB
+          const pagosNorm: any[] = [];
+          for (const v of ventasTurno) {
+            if (parseFloat(v.efectivo || 0) > 0)
+              pagosNorm.push({
+                tipo: "efectivo",
+                monto: v.efectivo,
+                usd_monto: 0,
+                factura: v.factura,
+                factura_venta: v.factura,
+              });
+            if (parseFloat(v.tarjeta || 0) > 0)
+              pagosNorm.push({
+                tipo: "tarjeta",
+                monto: v.tarjeta,
+                usd_monto: 0,
+                factura: v.factura,
+                factura_venta: v.factura,
+              });
+            if (parseFloat(v.transferencia || 0) > 0)
+              pagosNorm.push({
+                tipo: "transferencia",
+                monto: v.transferencia,
+                usd_monto: 0,
+                factura: v.factura,
+                factura_venta: v.factura,
+              });
+            if (parseFloat(v.dolares || 0) > 0)
+              pagosNorm.push({
+                tipo: "dolares",
+                monto: v.dolares,
+                usd_monto: v.dolares_usd,
+                factura: v.factura,
+                factura_venta: v.factura,
+              });
+          }
+          setHistorialPagos(pagosNorm);
+          setHistorialFiltroTipo(null);
+          setHistorialLoading(false);
+          return;
+        } // end if(aperturaIDB)
+      }
+
+      // ── ONLINE: Supabase ─────────────────────────────────────────
       const { end: dayEnd } = getLocalDayRange();
       let cajaAsignada = caiInfo?.caja_asignada;
       if (!cajaAsignada) {
@@ -788,7 +1030,7 @@ export default function PuntoDeVentaView({
           .maybeSingle();
         cajaAsignada = caiData?.caja_asignada || "";
       }
-      const { data: aperturaActual } = await supabase
+      const { data: aperturaActual, error: errorApertura } = await supabase
         .from("cierres")
         .select("fecha, estado")
         .eq("cajero_id", usuarioActual?.id)
@@ -798,6 +1040,35 @@ export default function PuntoDeVentaView({
         .limit(1)
         .maybeSingle();
       if (!aperturaActual) {
+        // Si hubo error de red (offline), intentar localStorage como último recurso
+        if (errorApertura || !navigator.onLine) {
+          const lsAp = obtenerAperturaLocalStorage();
+          if (
+            lsAp &&
+            (!usuarioActual?.id || lsAp.cajero_id === usuarioActual.id)
+          ) {
+            const tsAp = new Date(lsAp.fecha ?? 0).getTime();
+            const cajeroIdFinal = lsAp.cajero_id ?? usuarioActual?.id;
+            const todasVentas = cajeroIdFinal
+              ? await getByIndex<any>(STORE.VENTAS, "cajero_id", cajeroIdFinal)
+              : await getAll<any>(STORE.VENTAS);
+            const ventasTurno = todasVentas
+              .filter((v) => {
+                const ts = new Date(v.fecha_hora ?? 0).getTime();
+                return ts >= tsAp && v.tipo !== "CREDITO";
+              })
+              .sort(
+                (a, b) =>
+                  new Date(b.fecha_hora ?? 0).getTime() -
+                  new Date(a.fecha_hora ?? 0).getTime(),
+              );
+            setHistorialVentas(ventasTurno);
+            setHistorialPagos([]);
+            setHistorialFiltroTipo(null);
+            setHistorialLoading(false);
+            return;
+          }
+        }
         setHistorialLoading(false);
         alert("No hay apertura de caja registrada.");
         setShowHistorialVentas(false);
@@ -865,6 +1136,87 @@ export default function PuntoDeVentaView({
     setShowHistorialCreditos(true);
     setHistorialCreditosLoading(true);
     try {
+      // ── IDB primero (siempre, sin depender de navigator.onLine) ──────────
+      {
+        const cierresIDB = await getByIndex<any>(
+          STORE.CIERRES,
+          "cajero_id",
+          usuarioActual?.id,
+        );
+        let aperturaIDB: any =
+          cierresIDB
+            .filter((c) => c.estado === "APERTURA")
+            .sort(
+              (a, b) =>
+                new Date(b.fecha ?? 0).getTime() -
+                new Date(a.fecha ?? 0).getTime(),
+            )[0] ?? null;
+
+        // Fallback: rescatar desde localStorage / apertura_cache
+        if (!aperturaIDB) {
+          const lsAp = obtenerAperturaLocalStorage();
+          const cachedAp =
+            lsAp?.cajero_id === usuarioActual?.id
+              ? lsAp
+              : await obtenerAperturaCache()
+                  .then((c) => (c?.cajero_id === usuarioActual?.id ? c : null))
+                  .catch(() => null);
+          if (cachedAp) {
+            const numId =
+              parseInt(cachedAp.id as string) > 0
+                ? parseInt(cachedAp.id as string)
+                : -Date.now();
+            aperturaIDB = {
+              id: numId,
+              cajero_id: cachedAp.cajero_id,
+              cajero: (cachedAp as any).cajero || "",
+              caja: cachedAp.caja,
+              fecha: cachedAp.fecha,
+              estado: "APERTURA",
+            };
+            await upsertOne(STORE.CIERRES, aperturaIDB);
+          }
+        }
+
+        if (aperturaIDB) {
+          const tsAp = new Date(aperturaIDB.fecha ?? 0).getTime();
+          const todasFacturasCredito = await getAll<any>(
+            STORE.FACTURAS_CREDITO,
+          );
+          const clientesIDB = await getAll<any>(STORE.CLIENTES_CREDITO);
+
+          const creditosIDB = todasFacturasCredito
+            .filter((fc) => {
+              if (fc.cajero_id !== usuarioActual?.id) return false;
+              const ts = new Date(fc.fecha_hora ?? 0).getTime();
+              return ts >= tsAp;
+            })
+            .sort(
+              (a, b) =>
+                new Date(b.fecha_hora ?? 0).getTime() -
+                new Date(a.fecha_hora ?? 0).getTime(),
+            )
+            .map((fc) => {
+              const cliente = clientesIDB.find((c) => c.id === fc.cliente_id);
+              return {
+                ...fc,
+                clientes_credito: cliente
+                  ? {
+                      nombre: cliente.nombre,
+                      dni: cliente.dni,
+                      telefono: cliente.telefono,
+                    }
+                  : null,
+              };
+            });
+
+          setHistorialCreditos(creditosIDB);
+          return;
+        }
+        // aperturaIDB no encontrada → caer al bloque Supabase abajo
+      }
+
+      // ── MODO ONLINE: Supabase ─────────────────────────────────────────────
       // Extender hasta el fin del día siguiente para capturar registros
       // que pudieron haberse guardado con hora UTC (desfase +1 día)
       const tomorrow = new Date();
@@ -1665,46 +2017,137 @@ export default function PuntoDeVentaView({
   // Cargar conteo de platillos/bebidas del turno actual
   const fetchConteoTurno = async () => {
     try {
-      if (!estaConectado() || !usuarioActual?.id) return;
-      const { data: apertura } = await supabase
-        .from("cierres")
-        .select("fecha")
-        .eq("cajero_id", usuarioActual.id)
-        .eq("estado", "APERTURA")
-        .order("fecha", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (!apertura?.fecha) return;
-      const { data: ventas } = await supabase
-        .from("ventas")
-        .select("productos, factura")
-        .eq("cajero_id", usuarioActual.id)
-        .or("es_donacion.is.null,es_donacion.eq.false")
-        .neq("tipo", "DEVOLUCION")
-        .gte("fecha_hora", apertura.fecha);
-      let plat = 0;
-      let beb = 0;
-      const vistas = new Set<string>();
-      for (const v of ventas || []) {
-        const numFac = String(v.factura || "");
-        if (vistas.has(numFac)) continue;
-        vistas.add(numFac);
-        try {
-          const items =
-            typeof v.productos === "string"
-              ? JSON.parse(v.productos)
-              : v.productos;
-          if (Array.isArray(items)) {
-            for (const item of items) {
-              const qty = parseFloat(item.cantidad || 1);
-              if (item.tipo === "comida") plat += qty;
-              else if (item.tipo === "bebida") beb += qty;
-            }
-          }
-        } catch (_) {}
+      if (!usuarioActual?.id) return;
+
+      // ── IDB SIEMPRE PRIMERO (fuente de verdad) ─────────────────────────────
+      const cierresIDB = await getByIndex<any>(
+        STORE.CIERRES,
+        "cajero_id",
+        usuarioActual.id,
+      );
+      let aperturaIDB: any =
+        cierresIDB
+          .filter((c) => c.estado === "APERTURA")
+          .sort(
+            (a, b) =>
+              new Date(b.fecha ?? 0).getTime() -
+              new Date(a.fecha ?? 0).getTime(),
+          )[0] ?? null;
+
+      // Fallback: rescatar desde localStorage / apertura_cache si IDB está vacío
+      if (!aperturaIDB) {
+        const lsAp = obtenerAperturaLocalStorage();
+        const cachedAp =
+          lsAp?.cajero_id === usuarioActual.id
+            ? lsAp
+            : await obtenerAperturaCache()
+                .then((c) => (c?.cajero_id === usuarioActual.id ? c : null))
+                .catch(() => null);
+        if (cachedAp) {
+          const numId =
+            parseInt(cachedAp.id as string) > 0
+              ? parseInt(cachedAp.id as string)
+              : -Date.now();
+          aperturaIDB = {
+            id: numId,
+            cajero_id: cachedAp.cajero_id,
+            cajero: (cachedAp as any).cajero || "",
+            caja: cachedAp.caja,
+            fecha: cachedAp.fecha,
+            estado: "APERTURA",
+          };
+          await upsertOne(STORE.CIERRES, aperturaIDB);
+        }
       }
-      setPlatillosTurno(plat);
-      setBebidasTurno(beb);
+
+      if (aperturaIDB) {
+        const tsAp = new Date(aperturaIDB.fecha ?? 0).getTime();
+        const ventasIDB = await getByIndex<any>(
+          STORE.VENTAS,
+          "cajero_id",
+          usuarioActual.id,
+        );
+        let plat = 0;
+        let beb = 0;
+        for (const v of ventasIDB) {
+          if (v.es_donacion === true) continue;
+          if (v.tipo === "CREDITO") continue;
+          const ts = new Date(v.fecha_hora ?? 0).getTime();
+          if (ts < tsAp) continue;
+          const esDevolucion = v.tipo === "DEVOLUCION";
+          const factor = esDevolucion ? -1 : 1;
+          try {
+            const items =
+              typeof v.productos === "string"
+                ? JSON.parse(v.productos)
+                : v.productos;
+            if (Array.isArray(items)) {
+              for (const item of items) {
+                const qty = parseFloat(item.cantidad || 1);
+                if (item.tipo === "comida") plat += factor * qty;
+                else if (item.tipo === "bebida") beb += factor * qty;
+              }
+            }
+          } catch (_) {}
+        }
+        setPlatillosTurno(Math.max(0, plat));
+        setBebidasTurno(Math.max(0, beb));
+        return;
+      }
+
+      // ── Sin apertura en IDB: intentar Supabase como último recurso ─────────
+      if (estaConectado()) {
+        try {
+          const { data: apertura } = await supabase
+            .from("cierres")
+            .select("fecha")
+            .eq("cajero_id", usuarioActual.id)
+            .eq("estado", "APERTURA")
+            .order("fecha", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (!apertura?.fecha) return;
+
+          const { data: ventas } = await supabase
+            .from("ventas")
+            .select("productos, factura, tipo")
+            .eq("cajero_id", usuarioActual.id)
+            .or("es_donacion.is.null,es_donacion.eq.false")
+            .neq("tipo", "CREDITO")
+            .gte("fecha_hora", apertura.fecha);
+          let plat = 0;
+          let beb = 0;
+          const vistas = new Set<string>();
+          for (const v of ventas || []) {
+            const numFac = String(v.factura || "");
+            const esDevolucion = v.tipo === "DEVOLUCION";
+            if (!esDevolucion) {
+              if (vistas.has(numFac)) continue;
+              vistas.add(numFac);
+            }
+            const factor = esDevolucion ? -1 : 1;
+            try {
+              const items =
+                typeof v.productos === "string"
+                  ? JSON.parse(v.productos)
+                  : v.productos;
+              if (Array.isArray(items)) {
+                for (const item of items) {
+                  const qty = parseFloat(item.cantidad || 1);
+                  if (item.tipo === "comida") plat += factor * qty;
+                  else if (item.tipo === "bebida") beb += factor * qty;
+                }
+              }
+            } catch (_) {}
+          }
+          setPlatillosTurno(Math.max(0, plat));
+          setBebidasTurno(Math.max(0, beb));
+        } catch (_) {
+          console.warn(
+            "[fetchConteoTurno] Supabase offline, usando IDB solamente",
+          );
+        }
+      }
     } catch (_) {}
   };
 
@@ -1891,6 +2334,51 @@ export default function PuntoDeVentaView({
       }
       setVerificandoApertura(true);
       try {
+        // ── IDB ES SIEMPRE LA FUENTE DE VERDAD ────────────────────────────────
+        // Verificar IDB ANTES de consultar Supabase o localStorage.
+        // Usamos el registro MÁS RECIENTE por fecha para determinar el estado.
+        // Así funciona correctamente en turnos de medianoche y cualquier escenario.
+        try {
+          const idbCierres = await getByIndex<any>(
+            STORE.CIERRES,
+            "cajero_id",
+            usuarioActual.id,
+          );
+
+          if (idbCierres.length > 0) {
+            // Ordenar por fecha descendente → el más reciente manda
+            const masReciente = [...idbCierres].sort(
+              (a, b) =>
+                new Date(b.fecha ?? 0).getTime() -
+                new Date(a.fecha ?? 0).getTime(),
+            )[0];
+
+            if (masReciente.estado === "APERTURA") {
+              console.log(
+                "[verificarApertura] IDB → APERTURA activa (más reciente)",
+              );
+              setAperturaRegistrada(true);
+              setVerificandoApertura(false);
+              return;
+            } else {
+              // CIERRE u otro estado → turno cerrado
+              console.log(
+                "[verificarApertura] IDB → Turno cerrado (estado:",
+                masReciente.estado,
+                ")",
+              );
+              setAperturaRegistrada(false);
+              limpiarAperturaLocalStorage();
+              setVerificandoApertura(false);
+              return;
+            }
+          }
+          // IDB vacío → caer al bloque Supabase/localStorage
+        } catch (idbCheckErr) {
+          console.warn("[verificarApertura] Error leyendo IDB:", idbCheckErr);
+          // Continúa con Supabase/localStorage
+        }
+
         // Si hay conexión, verificar en Supabase
         if (isOnline) {
           // ── PRIORIDAD: si hay apertura offline pendiente de sync, subirla ANTES
@@ -2005,15 +2493,40 @@ export default function PuntoDeVentaView({
               aperturaLS,
             );
             setAperturaRegistrada(true);
+            // Asegurar que está en STORE.CIERRES para que funcionen los cálculos IDB
+            try {
+              const existentes = await getByIndex<any>(
+                STORE.CIERRES,
+                "cajero_id",
+                usuarioActual.id,
+              );
+              if (!existentes.find((c) => c.estado === "APERTURA")) {
+                const numId =
+                  parseInt(aperturaLS.id as string) > 0
+                    ? parseInt(aperturaLS.id as string)
+                    : -Date.now();
+                await upsertOne(STORE.CIERRES, {
+                  id: numId,
+                  cajero_id: aperturaLS.cajero_id,
+                  cajero: (aperturaLS as any).cajero || "",
+                  caja: aperturaLS.caja,
+                  fecha: aperturaLS.fecha,
+                  estado: "APERTURA",
+                });
+                console.log(
+                  "✓ Apertura sincronizada en STORE.CIERRES desde localStorage",
+                );
+              }
+            } catch (_) {}
           } else {
-            // Capa IndexedDB
+            // Capa IndexedDB (apertura_cache)
             const aperturaCache = await obtenerAperturaCache();
             if (aperturaCache) {
               console.log(
                 "✓ Apertura activa encontrada en IndexedDB:",
                 aperturaCache,
               );
-              // Sincronizar localStorage con IndexedDB
+              // Sincronizar localStorage con apertura_cache
               guardarAperturaLocalStorage({
                 id: aperturaCache.id,
                 cajero_id: aperturaCache.cajero_id,
@@ -2022,6 +2535,31 @@ export default function PuntoDeVentaView({
                 estado: aperturaCache.estado,
               });
               setAperturaRegistrada(true);
+              // Asegurar que está en STORE.CIERRES
+              try {
+                const existentes = await getByIndex<any>(
+                  STORE.CIERRES,
+                  "cajero_id",
+                  aperturaCache.cajero_id,
+                );
+                if (!existentes.find((c) => c.estado === "APERTURA")) {
+                  const numId =
+                    parseInt(aperturaCache.id as string) > 0
+                      ? parseInt(aperturaCache.id as string)
+                      : -Date.now();
+                  await upsertOne(STORE.CIERRES, {
+                    id: numId,
+                    cajero_id: aperturaCache.cajero_id,
+                    cajero: (aperturaCache as any).cajero || "",
+                    caja: aperturaCache.caja,
+                    fecha: aperturaCache.fecha,
+                    estado: "APERTURA",
+                  });
+                  console.log(
+                    "✓ Apertura sincronizada en STORE.CIERRES desde apertura_cache",
+                  );
+                }
+              } catch (_) {}
             } else {
               console.warn("⚠ No hay apertura en ningún cache");
               setAperturaRegistrada(false);
@@ -2295,18 +2833,33 @@ export default function PuntoDeVentaView({
       // Determinar caja asignada (usar caiInfo o consultar si es necesario)
       let cajaAsignada = caiInfo?.caja_asignada;
       if (!cajaAsignada) {
-        const { data: caiData } = await supabase
-          .from("cai_facturas")
-          .select("caja_asignada")
-          .eq("cajero_id", usuarioActual?.id)
-          .single();
-        cajaAsignada = caiData?.caja_asignada || "";
+        // Intentar desde IDB (STORE.CAI_FACTURAS)
+        try {
+          const caiRows = await getAll<any>(STORE.CAI_FACTURAS);
+          const caiLocal = caiRows.find(
+            (r) => r.cajero_id === usuarioActual?.id && r.activo !== false,
+          );
+          cajaAsignada = caiLocal?.caja_asignada || "";
+        } catch {
+          /* sin IDB */
+        }
       }
-
-      // Obtener timestamp actual en formato ISO para fecha_hora
+      if (!cajaAsignada) {
+        try {
+          const { data: caiData } = await supabase
+            .from("cai_facturas")
+            .select("caja_asignada")
+            .eq("cajero_id", usuarioActual?.id)
+            .single();
+          cajaAsignada = caiData?.caja_asignada || "";
+        } catch {
+          /* offline */
+        }
+      }
       const fechaHora = formatToHondurasLocal(new Date());
 
       const gastoData = {
+        id: -Date.now(), // id temporal negativo para IDB (será reemplazado por id real de Supabase en sincronización)
         tipo: motivoCompleto, // Guardar en 'tipo' para compatibilidad
         monto: montoNum,
         descripcion: motivoCompleto, // También en descripción
@@ -2337,9 +2890,9 @@ export default function PuntoDeVentaView({
           console.error("Error guardando gasto en Supabase:", error);
           console.log("⚠ Gasto guardado localmente, se sincronizará después");
         } else {
-          // Si se guardó exitosamente en Supabase, eliminar de IndexedDB
-          await eliminarGastoLocal(gastoIdLocal);
-          console.log("✓ Gasto sincronizado y eliminado de IndexedDB");
+          console.log(
+            "✓ Gasto guardado en Supabase (permanece en IDB como fuente primaria)",
+          );
         }
       } catch (supabaseErr) {
         console.error("Error de conexión con Supabase:", supabaseErr);
@@ -2410,34 +2963,61 @@ export default function PuntoDeVentaView({
     }
     setDevolucionBuscando(true);
     try {
-      // Buscar la venta original en la tabla ventas
-      const { data: venta, error: ventaError } = await supabase
-        .from("ventas")
-        .select("*")
-        .eq("factura", devolucionFactura.trim())
-        .eq("cajero_id", usuarioActual?.id)
-        .neq("tipo", "DEVOLUCION")
-        .single();
+      const numFac = devolucionFactura.trim();
 
-      if (ventaError || !venta) {
+      // ── Buscar primero en IDB ─────────────────────────────────────────────
+      let venta: any = null;
+      const todasVentasIDB = await getByIndex<any>(
+        STORE.VENTAS,
+        "cajero_id",
+        usuarioActual?.id,
+      );
+      venta =
+        todasVentasIDB.find(
+          (v) => v.factura === numFac && v.tipo !== "DEVOLUCION",
+        ) ?? null;
+
+      // Fallback Supabase si no está en IDB y hay conexión
+      if (!venta && navigator.onLine) {
+        const { data, error } = await supabase
+          .from("ventas")
+          .select("*")
+          .eq("factura", numFac)
+          .eq("cajero_id", usuarioActual?.id)
+          .neq("tipo", "DEVOLUCION")
+          .maybeSingle();
+        if (!error && data) venta = data;
+      }
+
+      if (!venta) {
         setShowDevolucionError(true);
         setDevolucionData(null);
         return;
       }
 
-      // Verificar si ya existe una devolución para esta factura
-      const { data: devolucionExistente } = await supabase
-        .from("ventas")
-        .select("id")
-        .eq("factura", "DEV-" + devolucionFactura.trim())
-        .eq("cajero_id", usuarioActual?.id)
-        .limit(1);
-
-      if (devolucionExistente && devolucionExistente.length > 0) {
+      // Verificar si ya existe una devolución — IDB primero
+      const devExistenteIDB = todasVentasIDB.find(
+        (v) => v.factura === "DEV-" + numFac,
+      );
+      if (devExistenteIDB) {
         alert("Esta factura ya tiene una devolución registrada");
         setDevolucionData(null);
         setDevolucionBuscando(false);
         return;
+      }
+      if (navigator.onLine) {
+        const { data: devolucionExistente } = await supabase
+          .from("ventas")
+          .select("id")
+          .eq("factura", "DEV-" + numFac)
+          .eq("cajero_id", usuarioActual?.id)
+          .limit(1);
+        if (devolucionExistente && devolucionExistente.length > 0) {
+          alert("Esta factura ya tiene una devolución registrada");
+          setDevolucionData(null);
+          setDevolucionBuscando(false);
+          return;
+        }
       }
 
       // Normalizar datos de pago (ahora están directamente en ventas)
@@ -2476,9 +3056,9 @@ export default function PuntoDeVentaView({
     try {
       const { factura } = devolucionData;
       const fechaHoraActual = formatToHondurasLocal();
+      const totalNeg = -Math.abs(parseFloat(factura.total || 0));
 
-      // Insertar en ventas con tipo DEVOLUCION y montos negativos (fusión factura + pago)
-      const ventaDevolucion = {
+      const ventaDevolucion: any = {
         fecha_hora: fechaHoraActual,
         cajero: usuarioActual?.nombre || "",
         cajero_id: usuarioActual?.id || null,
@@ -2494,32 +3074,58 @@ export default function PuntoDeVentaView({
         isv_15: (-parseFloat(factura.isv_15 || 0)).toFixed(2),
         isv_18: (-parseFloat(factura.isv_18 || 0)).toFixed(2),
         descuento: factura.descuento ? -parseFloat(factura.descuento) : null,
-        total: (-parseFloat(factura.total || 0)).toFixed(2),
+        total: totalNeg.toFixed(2),
         es_donacion: null,
-        // Campos de pago negados
+        // Negar exactamente los campos de pago originales para que el resumen quede en 0
         efectivo: -parseFloat(factura.efectivo || 0),
+        cambio: -parseFloat(factura.cambio || 0),
+        total_recibido: totalNeg,
         tarjeta: -parseFloat(factura.tarjeta || 0),
         transferencia: -parseFloat(factura.transferencia || 0),
         dolares: -parseFloat(factura.dolares || 0),
         dolares_usd: -parseFloat(factura.dolares_usd || 0),
         delivery: -parseFloat(factura.delivery || 0),
-        total_recibido: -parseFloat(factura.total_recibido || 0),
-        cambio: -parseFloat(factura.cambio || 0),
         banco: factura.banco || null,
         tarjeta_num: factura.tarjeta_num || null,
         autorizacion: factura.autorizacion || null,
         ref_transferencia: factura.ref_transferencia || null,
       };
 
-      const { error: ventaError } = await supabase
-        .from("ventas")
-        .insert([ventaDevolucion]);
+      // ── Guardar en IDB primero (id negativo = pendiente de subir) ─────────
+      const tempId = -Date.now();
+      await upsertOne(STORE.VENTAS, { ...ventaDevolucion, id: tempId });
+      console.log("✓ Devolución guardada en IDB (id temporal:", tempId, ")");
 
-      if (ventaError) {
-        console.error("Error insertando devolución en ventas:", ventaError);
-        alert("Error al registrar la devolución: " + ventaError.message);
-        return;
+      // ── Intentar Supabase si hay conexión ─────────────────────────────────
+      if (navigator.onLine) {
+        try {
+          const { data: inserted, error: ventaError } = await supabase
+            .from("ventas")
+            .insert([ventaDevolucion])
+            .select("id")
+            .single();
+          if (ventaError) {
+            console.error("Error devolución en Supabase:", ventaError);
+          } else if (inserted?.id) {
+            // Reemplazar registro temporal con el id real
+            await upsertOne(STORE.VENTAS, {
+              ...ventaDevolucion,
+              id: inserted.id,
+            });
+            try {
+              await deleteById(STORE.VENTAS, tempId);
+            } catch (_) {}
+          }
+        } catch (supaErr) {
+          console.warn(
+            "Sin conexión al guardar devolución, queda en IDB:",
+            supaErr,
+          );
+        }
       }
+
+      // Actualizar conteo de turno
+      fetchConteoTurno();
 
       // Éxito
       setShowDevolucionPasswordModal(false);
@@ -2536,20 +3142,25 @@ export default function PuntoDeVentaView({
     }
   };
 
-  // Función para validar contraseña del cajero desde la base de datos
+  // Función para validar contraseña del cajero — IDB primero, Supabase fallback
   const validarPasswordCajero = async (password: string): Promise<boolean> => {
     try {
+      // IDB primero
+      const usuarios = await getUsuariosLocal();
+      const usuarioIDB = usuarios.find((u) => u.id === usuarioActual?.id);
+      if (usuarioIDB) {
+        return (
+          usuarioIDB.clave === password || usuarioIDB.password === password
+        );
+      }
+      // Supabase fallback
+      if (!navigator.onLine) return false;
       const { data, error } = await supabase
         .from("usuarios")
         .select("clave")
         .eq("id", usuarioActual?.id)
         .single();
-
-      if (error || !data) {
-        console.error("Error validando contraseña:", error);
-        return false;
-      }
-
+      if (error || !data) return false;
       return data.clave === password;
     } catch (err) {
       console.error("Error en validarPasswordCajero:", err);
@@ -2611,6 +3222,7 @@ export default function PuntoDeVentaView({
       if (!isOnline) {
         const fechaLocal = formatToHondurasLocal();
         const tempId = `offline_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const tempNumId = -Date.now();
         await guardarAperturaCache({
           id: tempId,
           cajero_id: usuarioActual.id,
@@ -2629,6 +3241,22 @@ export default function PuntoDeVentaView({
           estado: "APERTURA",
           pending_sync: true,
         });
+        // También guardar en STORE.CIERRES para que funcionen los cálculos IDB
+        try {
+          await upsertOne(STORE.CIERRES, {
+            id: tempNumId,
+            cajero_id: usuarioActual.id,
+            cajero: usuarioActual.nombre || "",
+            caja: cajaAsignada,
+            fecha: fechaLocal,
+            estado: "APERTURA",
+          });
+          console.log(
+            "✓ Apertura offline guardada en STORE.CIERRES (id:",
+            tempNumId,
+            ")",
+          );
+        } catch (_) {}
         console.log(
           "✓ Apertura offline creada localmente (se sincronizará al reconectar)",
         );
@@ -3046,7 +3674,13 @@ export default function PuntoDeVentaView({
                     display: `L ${(resumenData.efectivo - resumenData.gastos).toFixed(2)}`,
                     sub: (() => {
                       const partes: string[] = [];
-                      if ((resumenData.cambio ?? 0) > 0)
+                      // Mostrar −Cambio solo si el efectivo neto es positivo.
+                      // Si efectivo=0 (devolucion cancela venta), el cambio ya
+                      // está incorporado en el neto y mostrarlo sería confuso.
+                      if (
+                        (resumenData.cambio ?? 0) > 0 &&
+                        (resumenData.efectivo ?? 0) > 0
+                      )
                         partes.push(
                           `−Cambio: L ${(resumenData.cambio ?? 0).toFixed(2)}`,
                         );
@@ -4988,11 +5622,15 @@ export default function PuntoDeVentaView({
                   );
                 }
 
-                // Si falló Supabase, guardar en IndexedDB como respaldo
+                // Siempre guardar en IDB (fuente primaria offline)
+                await guardarVentaLocal(ventaCompleta);
                 if (!guardadoEnSupabase) {
-                  await guardarVentaLocal(ventaCompleta);
                   console.log(
                     "⚠ Fallo en Supabase. Venta guardada en IndexedDB para sincronización",
+                  );
+                } else {
+                  console.log(
+                    `✓ Venta ${ventaCompleta.factura} guardada en IDB + Supabase`,
                   );
                 }
               } else {
@@ -5062,6 +5700,30 @@ export default function PuntoDeVentaView({
                       err,
                     );
                   }
+
+                  // Actualizar STORE.CAI_FACTURAS en IDB (fuente primaria offline)
+                  try {
+                    const caiRows = await getAll<any>(STORE.CAI_FACTURAS);
+                    const caiRec = caiRows.find(
+                      (r) =>
+                        r.cajero_id === usuarioActual?.id &&
+                        r.tipo_comprobante === "RECIBO",
+                    );
+                    if (caiRec) {
+                      await upsertOne(STORE.CAI_FACTURAS, {
+                        ...caiRec,
+                        factura_actual: nuevaFactura,
+                      });
+                      console.log(
+                        `[facturar] op=${operationId} → factura_actual=${nuevaFactura} actualizada en STORE.CAI_FACTURAS (IDB)`,
+                      );
+                    }
+                  } catch (err) {
+                    console.error(
+                      "Error actualizando factura_actual en STORE.CAI_FACTURAS:",
+                      err,
+                    );
+                  }
                 }
               }
             } catch (err) {
@@ -5079,6 +5741,8 @@ export default function PuntoDeVentaView({
               setRtnCliente("");
               setNombreClienteFiscal("");
               isSubmittingRef.current = false;
+              // Actualizar contadores 🍽/🥤 en tiempo real desde IDB
+              fetchConteoTurno();
               console.log(`[facturar] op=${operationId} → finalizado.`);
             }
           }, 300);
@@ -9609,10 +10273,6 @@ export default function PuntoDeVentaView({
                     className="menu-btn"
                     onClick={() => {
                       closeMenuAnimated();
-                      if (!isOnline) {
-                        setShowNoConnectionModal(true);
-                        return;
-                      }
                       // Si hay pedidos a domicilio pendientes, advertir antes de cerrar
                       if (pedidosPendientesCount > 0) {
                         setShowCierrePedidosWarning(true);
@@ -9621,13 +10281,9 @@ export default function PuntoDeVentaView({
                       setShowCierre(true);
                     }}
                     style={{
-                      background: isOnline
-                        ? "linear-gradient(135deg, #fffbeb, #fef3c7)"
-                        : "linear-gradient(135deg, #f9fafb, #f3f4f6)",
-                      color: isOnline ? "#78350f" : "#9ca3af",
-                      border: isOnline
-                        ? "1px solid #fcd34d"
-                        : "1px solid #e5e7eb",
+                      background: "linear-gradient(135deg, #fffbeb, #fef3c7)",
+                      color: "#78350f",
+                      border: "1px solid #fcd34d",
                       animationDelay: "120ms",
                       position: "relative",
                     }}
@@ -9636,11 +10292,9 @@ export default function PuntoDeVentaView({
                     <span>
                       <div className="btn-label">Cierre de Caja</div>
                       <div className="btn-desc">
-                        {!isOnline
-                          ? "Sin conexión"
-                          : pedidosPendientesCount > 0
-                            ? `⚠ ${pedidosPendientesCount} pedido(s) pendiente(s)`
-                            : "Finalizar turno"}
+                        {pedidosPendientesCount > 0
+                          ? `⚠ ${pedidosPendientesCount} pedido(s) pendiente(s)`
+                          : "Finalizar turno"}
                       </div>
                     </span>
                   </button>
@@ -9837,16 +10491,33 @@ export default function PuntoDeVentaView({
                       setCaiFactData(null);
                       setShowDatosFactModal(true);
                       try {
-                        const { data, error } = await supabase
-                          .from("cai_facturas")
-                          .select("*")
-                          .eq("cajero_id", usuarioActual?.id)
-                          .eq("tipo_comprobante", "FACTURA")
-                          .eq("activo", true)
-                          .order("id", { ascending: false })
-                          .limit(1)
-                          .maybeSingle();
-                        if (!error) setCaiFactData(data);
+                        // IDB primero (funciona offline)
+                        const caiRows = await getAll<any>(STORE.CAI_FACTURAS);
+                        const caiLocal = caiRows.find(
+                          (r) =>
+                            r.cajero_id === usuarioActual?.id &&
+                            r.tipo_comprobante === "FACTURA" &&
+                            r.activo !== false,
+                        );
+                        if (caiLocal) {
+                          setCaiFactData(caiLocal);
+                        } else {
+                          // Fallback a Supabase si no hay en IDB
+                          const { data, error } = await supabase
+                            .from("cai_facturas")
+                            .select("*")
+                            .eq("cajero_id", usuarioActual?.id)
+                            .eq("tipo_comprobante", "FACTURA")
+                            .eq("activo", true)
+                            .order("id", { ascending: false })
+                            .limit(1)
+                            .maybeSingle();
+                          if (!error && data) {
+                            setCaiFactData(data);
+                            // Guardar en IDB para próximas consultas offline
+                            await upsertOne(STORE.CAI_FACTURAS, data);
+                          }
+                        }
                       } catch {
                         /* non-critical */
                       }

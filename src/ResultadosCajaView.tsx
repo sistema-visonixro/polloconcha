@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "./supabaseClient";
 import { useDatosNegocio } from "./useDatosNegocio";
+import { getAll, getPrecioDolarLocal, STORE, upsertOne, encolarEscritura } from "./utils/localDB";
 
 export default function ResultadosCajaView() {
   const { datos: datosNegocio } = useDatosNegocio();
@@ -55,25 +56,50 @@ export default function ResultadosCajaView() {
       setLoading(true);
       try {
         const { fechaInicio, fechaFin } = getMonthRange(monthOffset);
+        const tsInicio = new Date(fechaInicio).getTime();
+        const tsFin = new Date(fechaFin).getTime();
 
-        let query = supabase
-          .from("cierres")
-          .select("*")
-          .eq("tipo_registro", "cierre")
-          .gte("fecha", fechaInicio)
-          .lte("fecha", fechaFin)
-          .order("fecha", { ascending: false });
+        // ── IDB primero ────────────────────────────────────────
+        let cierresData: any[] = [];
+        try {
+          const todosIdb = await getAll<any>(STORE.CIERRES);
+          cierresData = todosIdb
+            .filter((c) => {
+              if (c.tipo_registro !== "cierre" && c.estado !== "CIERRE") return false;
+              const ts = new Date(c.fecha ?? 0).getTime();
+              if (ts < tsInicio || ts > tsFin) return false;
+              if (usuarioActual && usuarioActual.rol === "cajero") {
+                return c.cajero_id === usuarioActual.id;
+              }
+              return true;
+            })
+            .sort((a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime());
+        } catch { /* IDB no disponible */ }
 
-        if (usuarioActual && usuarioActual.rol === "cajero") {
-          query = query.eq("cajero_id", usuarioActual.id);
+        // ── Fallback/complemento Supabase ─────────────────────
+        if (navigator.onLine) {
+          try {
+            let query = supabase
+              .from("cierres")
+              .select("*")
+              .eq("tipo_registro", "cierre")
+              .gte("fecha", fechaInicio)
+              .lte("fecha", fechaFin)
+              .order("fecha", { ascending: false });
+
+            if (usuarioActual && usuarioActual.rol === "cajero") {
+              query = query.eq("cajero_id", usuarioActual.id);
+            }
+
+            const { data, error } = await query;
+            if (!error && data && data.length > 0) {
+              // Fusionar: usar Supabase como fuente principal si está disponible
+              cierresData = data;
+            }
+          } catch { /* sin conexión real */ }
         }
 
-        const { data, error } = await query;
-        if (!error && data) {
-          setCierres(data);
-        } else if (error) {
-          console.error("Error cargando cierres:", error);
-        }
+        setCierres(cierresData);
       } catch (err) {
         console.error("Error en fetchCierres:", err);
       } finally {
@@ -138,58 +164,88 @@ export default function ResultadosCajaView() {
     setUpdatingObservacion(true);
     try {
       // Validar contraseña
-      const { data: userData, error: userError } = await supabase
-        .from("usuarios")
-        .select("clave")
-        .eq("id", usuarioActual.id)
-        .single();
+      let claveUsuario = "";
+      try {
+        const usuariosIdb = await getAll<any>(STORE.USUARIOS);
+        const user = usuariosIdb.find((u: any) => u.id === usuarioActual.id);
+        if (user) claveUsuario = user.clave;
+      } catch { /* IDB no disponible */ }
 
-      if (userError || !userData) {
-        setErrorMessage("Error al validar usuario");
+      if (!claveUsuario && navigator.onLine) {
+        const { data: userData, error: userError } = await supabase
+          .from("usuarios")
+          .select("clave")
+          .eq("id", usuarioActual.id)
+          .single();
+        if (!userError && userData) {
+          claveUsuario = userData.clave;
+        }
+      }
+
+      if (!claveUsuario) {
+        setErrorMessage("Error al validar usuario (offline o sin datos)");
         setShowPasswordModal(false);
         setShowErrorModal(true);
         return;
       }
 
-      if (userData.clave !== passwordAclaracion) {
+      if (claveUsuario !== passwordAclaracion) {
         setErrorMessage("Contraseña incorrecta");
         setShowPasswordModal(false);
         setShowErrorModal(true);
         return;
       }
 
-      // Actualizar cierre
-      const { error } = await supabase
-        .from("cierres")
-        .update({
-          observacion: "aclarado",
-          referencia_aclaracion: referenciaAclaracion.trim(),
-        })
-        .eq("id", cierreSeleccionado.id);
+      // Actualizar cierre en IDB primero
+      const cierreActualizado = {
+        ...cierreSeleccionado,
+        observacion: "aclarado",
+        referencia_aclaracion: referenciaAclaracion.trim(),
+      };
 
-      if (error) {
-        console.error("Error actualizando cierre:", error);
-        setErrorMessage("Error al actualizar el cierre");
-        setShowPasswordModal(false);
-        setShowErrorModal(true);
-      } else {
-        setCierres((prev) =>
-          prev.map((c) =>
-            c.id === cierreSeleccionado.id
-              ? {
-                  ...c,
-                  observacion: "aclarado",
-                  referencia_aclaracion: referenciaAclaracion.trim(),
-                }
-              : c,
-          ),
-        );
-        setShowPasswordModal(false);
-        setShowSuccessModal(true);
-        setReferenciaAclaracion("");
-        setPasswordAclaracion("");
-        setCierreSeleccionado(null);
+      try {
+        await upsertOne(STORE.CIERRES, cierreActualizado);
+      } catch { /* non-critical */ }
+
+      // Actualizar en Supabase o encolar
+      let errorSupabase = null;
+      if (navigator.onLine) {
+        const { error } = await supabase
+          .from("cierres")
+          .update({
+            observacion: "aclarado",
+            referencia_aclaracion: referenciaAclaracion.trim(),
+          })
+          .eq("id", cierreSeleccionado.id);
+        errorSupabase = error;
       }
+
+      if (!navigator.onLine || errorSupabase) {
+        try {
+          await encolarEscritura({
+            tabla: "cierres",
+            operacion: "update",
+            datos: {
+              id: cierreSeleccionado.id,
+              observacion: "aclarado",
+              referencia_aclaracion: referenciaAclaracion.trim(),
+            },
+          });
+        } catch { /* non-critical */ }
+      }
+
+      setCierres((prev) =>
+        prev.map((c) =>
+          c.id === cierreSeleccionado.id
+            ? cierreActualizado
+            : c,
+        ),
+      );
+      setShowPasswordModal(false);
+      setShowSuccessModal(true);
+      setReferenciaAclaracion("");
+      setPasswordAclaracion("");
+      setCierreSeleccionado(null);
     } catch (err) {
       console.error(err);
       setErrorMessage("Error inesperado");
@@ -202,6 +258,16 @@ export default function ResultadosCajaView() {
 
   useEffect(() => {
     (async () => {
+      // ── IDB primero ────────────────────────────────────────
+      try {
+        const tasaIdb = await getPrecioDolarLocal();
+        if (tasaIdb > 0) {
+          setTasaDolar(tasaIdb);
+          return;
+        }
+      } catch { /* IDB no disponible */ }
+
+      // ── Fallback Supabase ───────────────────────────────────
       try {
         const { data: precioData, error } = await supabase
           .from("precio_dolar")

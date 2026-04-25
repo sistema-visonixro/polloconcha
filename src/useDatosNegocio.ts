@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { supabase } from "./supabaseClient";
+import { getDatosNegocioLocal, upsertOne, STORE } from "./utils/localDB";
 import {
   guardarDatosNegocioCache,
   obtenerDatosNegocioCache,
@@ -35,6 +36,40 @@ export function useDatosNegocio() {
 
     async function cargarDatos() {
       try {
+        // 1. Intentar desde IndexedDB primero (offline-first)
+        const datosIDB = await getDatosNegocioLocal();
+        if (datosIDB) {
+          cachedDatos = datosIDB;
+          setDatos(datosIDB);
+          document.title = datosIDB.nombre_negocio || "puntoventa";
+          if (datosIDB.logo_url) updateFavicon(datosIDB.logo_url);
+          setLoading(false);
+          // Sync silencioso en background si hay conexión
+          if (navigator.onLine) {
+            (async () => {
+              try {
+                const { data: d } = await supabase
+                  .from("datos_negocio")
+                  .select("*")
+                  .order("id", { ascending: true })
+                  .limit(1)
+                  .maybeSingle();
+                if (d) {
+                  await upsertOne(STORE.DATOS_NEGOCIO, d);
+                  cachedDatos = d;
+                  setDatos(d);
+                  document.title = d.nombre_negocio || "puntoventa";
+                  if (d.logo_url) updateFavicon(d.logo_url);
+                }
+              } catch {
+                /* silencioso */
+              }
+            })();
+          }
+          return;
+        }
+
+        // 2. No hay datos en IDB → intentar desde Supabase
         const { data, error } = await supabase
           .from("datos_negocio")
           .select("*")
@@ -42,16 +77,13 @@ export function useDatosNegocio() {
           .limit(1)
           .maybeSingle();
 
-        if (error) {
-          console.error("Error al cargar datos del negocio:", error);
-          throw error; // Lanzar para ir al catch
-        }
+        if (error) throw error;
 
         if (data) {
           cachedDatos = data;
           setDatos(data);
-
-          // Guardar en IndexedDB para uso offline
+          // Guardar en IDB y cache legado
+          await upsertOne(STORE.DATOS_NEGOCIO, data);
           await guardarDatosNegocioCache({
             id: data.id?.toString() || "1",
             nombre_negocio: data.nombre_negocio,
@@ -61,22 +93,13 @@ export function useDatosNegocio() {
             propietario: data.propietario,
             logo_url: data.logo_url,
           });
-          console.log("✓ Datos del negocio guardados en cache");
-
-          // Actualizar el título de la página
           document.title = data.nombre_negocio || "puntoventa";
-
-          // Actualizar el favicon si hay logo
-          if (data.logo_url) {
-            updateFavicon(data.logo_url);
-          }
+          if (data.logo_url) updateFavicon(data.logo_url);
         }
       } catch (error) {
         console.error("Error:", error);
-
-        // Intentar cargar desde cache si falla Supabase
+        // Fallback a cache legado (localStorage/offlineSync)
         try {
-          console.log("🔄 Intentando cargar datos del negocio desde cache...");
           const datosCache = await obtenerDatosNegocioCache();
 
           if (datosCache) {

@@ -2,6 +2,12 @@
 // Servicio de Proveedores y Cuentas por Pagar
 // ============================================================
 import { supabase } from "../supabaseClient";
+import {
+  getAll,
+  upsertOne,
+  encolarEscritura,
+  STORE,
+} from "../utils/localDB";
 import type {
   Proveedor,
   ProveedorInput,
@@ -20,6 +26,21 @@ import type {
 export async function obtenerProveedores(
   soloActivos = true,
 ): Promise<Proveedor[]> {
+  // ── IDB primero ────────────────────────────────────────────
+  try {
+    let proveedoresIdb = await getAll<Proveedor>(STORE.PROVEEDORES);
+    if (proveedoresIdb.length > 0) {
+      if (soloActivos) proveedoresIdb = proveedoresIdb.filter((p) => p.activo !== false);
+      proveedoresIdb.sort((a, b) =>
+        (a.nombre_comercial ?? "").localeCompare(b.nombre_comercial ?? ""),
+      );
+      return proveedoresIdb;
+    }
+  } catch {
+    /* IDB no disponible, continuar con Supabase */
+  }
+
+  // ── Fallback Supabase ──────────────────────────────────────
   let query = supabase
     .from("proveedores")
     .select("*")
@@ -111,21 +132,53 @@ export async function obtenerCuentasPorPagar(
 export async function crearCuentaPorPagar(
   input: CuentaPorPagarInput,
 ): Promise<CuentaPorPagar> {
-  const registro = {
+  const registro: any = {
     ...input,
     saldo_pendiente: input.monto_total,
     total_pagado: 0,
     estado: "pendiente",
   };
 
-  const { data, error } = await supabase
-    .from("cuentas_por_pagar")
-    .insert([registro])
-    .select()
-    .single();
+  // ── 1. Guardar en IDB primero ──────────────────────────────
+  const tempId = registro.id ?? `cxp-${Date.now()}`;
+  const registroIdb = { ...registro, id: tempId };
+  try {
+    await upsertOne(STORE.CUENTAS_PAGAR, registroIdb);
+  } catch {
+    /* non-critical */
+  }
 
-  if (error) throw new Error(error.message);
-  return data;
+  // ── 2. Intentar Supabase; si falla, encolar ────────────────
+  if (navigator.onLine) {
+    try {
+      const { data, error } = await supabase
+        .from("cuentas_por_pagar")
+        .insert([registro])
+        .select()
+        .single();
+
+      if (!error && data) {
+        // Actualizar IDB con el ID real de Supabase
+        try {
+          const { ["id"]: _old, ...rest } = registroIdb;
+          void _old;
+          await upsertOne(STORE.CUENTAS_PAGAR, { ...rest, id: data.id });
+        } catch { /* non-critical */ }
+        return data;
+      }
+    } catch {
+      /* sin conexión real */
+    }
+  }
+
+  // ── 3. Encolar para sincronización posterior ───────────────
+  await encolarEscritura({
+    tabla: "cuentas_por_pagar",
+    operacion: "insert",
+    datos: registro,
+  });
+
+  return registroIdb as CuentaPorPagar;
 }
 
 export async function actualizarCuentaPorPagar(
