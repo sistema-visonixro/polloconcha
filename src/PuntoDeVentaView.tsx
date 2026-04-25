@@ -4880,17 +4880,20 @@ export default function PuntoDeVentaView({
 
                       if (esConflictoFactura) {
                         // Contador desincronizado: buscar siguiente número libre con loop
+                        // Llamar obtenerSiguienteDisponible UNA sola vez; luego incrementar en cada conflicto
+                        const numBase = await obtenerSiguienteDisponible();
+                        let numActual = numBase ? parseInt(numBase) : null;
                         let intentos = 0;
-                        while (!guardadoEnSupabase && intentos < 5) {
+                        while (!guardadoEnSupabase && intentos < 10) {
                           intentos++;
-                          console.warn(
-                            `⚠ Factura ${factura} ya existe. Buscando número libre (intento ${intentos})...`,
-                          );
-                          const nuevoNum = await obtenerSiguienteDisponible();
-                          if (!nuevoNum) {
+                          if (numActual === null) {
                             console.error("No se pudo obtener número libre");
                             break;
                           }
+                          const nuevoNum = numActual.toString();
+                          console.warn(
+                            `⚠ Factura ${factura} ya existe. Buscando número libre (intento ${intentos})... → ${nuevoNum}`,
+                          );
                           const ventaCorregida = {
                             ...ventaCompleta,
                             factura: nuevoNum,
@@ -4923,17 +4926,19 @@ export default function PuntoDeVentaView({
                               }
                             }
                           } else if (
-                            retryErr.code !== "23505" &&
-                            (retryErr as any).status !== 409
+                            retryErr.code === "23505" ||
+                            (retryErr as any).status === 409
                           ) {
-                            // Solo abortar si NO es conflicto de clave duplicada
+                            // Número tomado → incrementar y reintentar
+                            numActual++;
+                          } else {
+                            // Error no recuperable
                             console.error(
                               "Error no recuperable al guardar venta:",
                               retryErr,
                             );
                             break;
                           }
-                          // Si es 23505/409, el loop continúa con un número diferente
                         }
                       } else {
                         // Verificar si es doble submit (mismo operation_id)
