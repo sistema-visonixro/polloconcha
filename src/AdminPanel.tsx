@@ -23,6 +23,7 @@ type ViewType =
   | "proveedores"
   | "donacionesMensuales"
   | "impresoras"
+  | "configuraciones"
   | "facturacionSAR";
 
 const cards: {
@@ -130,6 +131,13 @@ const cards: {
     color: "#0284c7",
     subtitle: "USB recibo y comanda",
   },
+  {
+    label: "Configuraciones",
+    icon: "⚙️",
+    view: "configuraciones",
+    color: "#475569",
+    subtitle: "Reglas del POS",
+  },
 ];
 
 interface AdminPanelProps {
@@ -154,6 +162,14 @@ import ProveedoresCxPView from "./ProveedoresCxPView";
 import DonacionesMensualesView from "./DonacionesMensualesView";
 import ImpresorasView from "./ImpresorasView";
 import FacturacionSARView from "./FacturacionSARView";
+import ConfiguracionesView from "./ConfiguracionesView";
+
+const ADMIN_PANEL_VIEW_KEY = "admin_current_view";
+const VALID_ADMIN_VIEWS = new Set<string>([
+  "menu",
+  "facturasEmitidas",
+  ...cards.map((card) => card.view),
+]);
 
 const AdminPanel: FC<AdminPanelProps> = (props) => {
   const { user } = props;
@@ -163,8 +179,28 @@ const AdminPanel: FC<AdminPanelProps> = (props) => {
     typeof window !== "undefined" ? window.innerWidth >= 1024 : true,
   );
 
-  const [currentView, setCurrentView] = useState<string>("menu");
+  const [currentView, setCurrentView] = useState<string>(() => {
+    try {
+      const savedView = localStorage.getItem(ADMIN_PANEL_VIEW_KEY);
+      if (savedView && VALID_ADMIN_VIEWS.has(savedView)) {
+        return savedView;
+      }
+    } catch {
+      // ignore localStorage errors
+    }
+    return "menu";
+  });
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+  useEffect(() => {
+    try {
+      if (VALID_ADMIN_VIEWS.has(currentView)) {
+        localStorage.setItem(ADMIN_PANEL_VIEW_KEY, currentView);
+      }
+    } catch {
+      // ignore localStorage errors
+    }
+  }, [currentView]);
 
   useEffect(() => {
     const onResize = () => {
@@ -424,6 +460,21 @@ const AdminPanel: FC<AdminPanelProps> = (props) => {
         <line x1="16" y1="13" x2="8" y2="13" />
         <line x1="16" y1="17" x2="8" y2="17" />
         <line x1="10" y1="9" x2="8" y2="9" />
+      </svg>
+    ),
+    configuraciones: (
+      <svg
+        width="17"
+        height="17"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
       </svg>
     ),
   };
@@ -1140,6 +1191,9 @@ const AdminPanel: FC<AdminPanelProps> = (props) => {
             {currentView === "impresoras" && (
               <ImpresorasView onBack={() => setCurrentView("menu")} />
             )}
+            {currentView === "configuraciones" && (
+              <ConfiguracionesView onBack={() => setCurrentView("menu")} />
+            )}
             {currentView === "facturacionSAR" && (
               <FacturacionSARView onBack={() => setCurrentView("menu")} />
             )}
@@ -1217,6 +1271,7 @@ const AdminPanel: FC<AdminPanelProps> = (props) => {
                   flex: "1 1 auto",
                 }}
                 onClick={() => {
+                  localStorage.removeItem(ADMIN_PANEL_VIEW_KEY);
                   localStorage.removeItem("usuario");
                   window.location.href = "/";
                 }}

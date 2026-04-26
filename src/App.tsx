@@ -51,11 +51,24 @@ function App() {
   const [syncProgress, setSyncProgress] = useState(0);
   const [syncTabla, setSyncTabla] = useState("");
   const syncInProgress = useRef(false);
+  const [shouldReloadAfterSync, setShouldReloadAfterSync] = useState(false);
+  const [isOnline, setIsOnline] = useState(() => navigator.onLine);
+
+  const forceFullAppReload = () => {
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("sync_reload", String(Date.now()));
+      window.location.replace(url.toString());
+    } catch {
+      window.location.href = `${window.location.pathname}?sync_reload=${Date.now()}${window.location.hash || ""}`;
+    }
+  };
 
   // Función reutilizable para sincronizar con progreso visual
-  const runSync = async () => {
+  const runSync = async (shouldReload = false) => {
     if (syncInProgress.current) return;
     syncInProgress.current = true;
+    setShouldReloadAfterSync(false);
     setSyncingModal(true);
     setSyncProgress(0);
     setSyncTabla("");
@@ -72,6 +85,15 @@ function App() {
       await procesarColaEscrituras();
       setSyncProgress(100);
       await new Promise((r) => setTimeout(r, 700));
+
+      // Si se debe recargar (sincronización manual), hacerlo después de mostrar éxito
+      if (shouldReload) {
+        setShouldReloadAfterSync(true);
+        setSyncTabla("Aplicando cambios...");
+        await new Promise((r) => setTimeout(r, 1200));
+        forceFullAppReload();
+        return;
+      }
     } catch (_) {
       /* silencioso */
     } finally {
@@ -81,6 +103,39 @@ function App() {
       syncInProgress.current = false;
     }
   };
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    const forzarSyncTotal = () => {
+      if (!navigator.onLine) {
+        alert("⚠️ No hay internet. No se puede forzar la sincronización total.");
+        return;
+      }
+      // Sincronizar y luego recargar la app
+      runSync(true);
+    };
+
+    (window as any).forzarSincronizacionTotal = forzarSyncTotal;
+    window.addEventListener(
+      "app:force-full-sync",
+      forzarSyncTotal as EventListener,
+    );
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+      delete (window as any).forzarSincronizacionTotal;
+      window.removeEventListener(
+        "app:force-full-sync",
+        forzarSyncTotal as EventListener,
+      );
+    };
+  }, []);
 
   useEffect(() => {
     inicializarAppOffline((p) => {
@@ -144,6 +199,7 @@ function App() {
         | "proveedores"
         | "donacionesMensuales"
         | "impresoras"
+        | "configuraciones"
         | "facturacionSAR";
     } catch {
       return undefined;
@@ -174,6 +230,7 @@ function App() {
     | "proveedores"
     | "donacionesMensuales"
     | "impresoras"
+    | "configuraciones"
     | "facturacionSAR"
   >(initialView || "home");
   const [cajaApertura, setCajaApertura] = useState<string | null>(null);
@@ -458,6 +515,14 @@ function App() {
     return <Landing onFinish={handleLandingFinish} />;
   }
 
+  const handleForzarSincronizacionTotal = () => {
+    if (!isOnline) {
+      alert("⚠️ No hay internet. No se puede sincronizar toda la base.");
+      return;
+    }
+    runSync(true);
+  };
+
   // Componente de versión para todas las vistas
   const VersionComponent = () => (
     <>
@@ -478,6 +543,26 @@ function App() {
         >
           <span>Versión: {appVersion}</span>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              onClick={handleForzarSincronizacionTotal}
+              disabled={syncingModal || !isOnline}
+              style={{
+                background: "transparent",
+                border: "none",
+                color: syncingModal || !isOnline ? "#94a3b8" : "#0284c7",
+                fontSize: 12,
+                textDecoration: "underline",
+                cursor: syncingModal || !isOnline ? "not-allowed" : "pointer",
+                padding: 0,
+              }}
+              title={
+                !isOnline
+                  ? "Sin internet: no se puede sincronizar"
+                  : "Sincronizar toda la base de datos"
+              }
+            >
+              {syncingModal ? "Sincronizando..." : "Sincronizar todo"}
+            </button>
             <button
               onClick={() => {
                 setCheckingUpdate(true);
@@ -559,15 +644,30 @@ function App() {
   }
 
   if (view === "etiquetas" && user?.rol === "Admin") {
-    return <EtiquetasView onBack={() => setView("admin")} />;
+    return (
+      <>
+        <EtiquetasView onBack={() => setView("admin")} />
+        <VersionComponent />
+      </>
+    );
   }
 
   if (view === "recibo" && user?.rol === "Admin") {
-    return <ReciboView onBack={() => setView("admin")} />;
+    return (
+      <>
+        <ReciboView onBack={() => setView("admin")} />
+        <VersionComponent />
+      </>
+    );
   }
 
   if (view === "datosNegocio" && user?.rol === "Admin") {
-    return <DatosNegocioView onBack={() => setView("admin")} />;
+    return (
+      <>
+        <DatosNegocioView onBack={() => setView("admin")} />
+        <VersionComponent />
+      </>
+    );
   }
 
   if (view === "usuarios" && user?.rol === "Admin") {
@@ -607,7 +707,12 @@ function App() {
   }
 
   if (view === "movimientosMovil" && user?.rol === "inventario") {
-    return <InventarioMovilView onLogout={handleLogout} />;
+    return (
+      <>
+        <InventarioMovilView onLogout={handleLogout} />
+        <VersionComponent />
+      </>
+    );
   }
 
   if (view === "cai" && user?.rol === "Admin") {
@@ -741,42 +846,56 @@ function App() {
               boxShadow: "0 8px 40px rgba(0,0,0,0.5)",
             }}
           >
-            <div style={{ fontSize: 40, marginBottom: 12 }}>🔄</div>
-            <p style={{ fontWeight: 700, fontSize: 18, margin: "0 0 6px" }}>
-              Actualizando datos locales
-            </p>
-            <p
-              style={{
-                fontSize: 12,
-                opacity: 0.6,
-                margin: "0 0 18px",
-                minHeight: 18,
-              }}
-            >
-              {syncTabla ? `Tabla: ${syncTabla}` : "Preparando..."}
-            </p>
-            {/* Barra de progreso */}
-            <div
-              style={{
-                background: "#1e3a5f",
-                borderRadius: 8,
-                height: 12,
-                overflow: "hidden",
-              }}
-            >
-              <div
-                style={{
-                  height: "100%",
-                  borderRadius: 8,
-                  background: "linear-gradient(90deg,#1976d2,#42a5f5)",
-                  width: `${syncProgress}%`,
-                  transition: "width 0.3s ease",
-                }}
-              />
-            </div>
-            <p style={{ marginTop: 10, fontSize: 15, fontWeight: 700 }}>
-              {syncProgress}%
-            </p>
+            {shouldReloadAfterSync ? (
+              <>
+                <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
+                <p style={{ fontWeight: 700, fontSize: 18, margin: "0 0 12px" }}>
+                  ¡Actualización completada!
+                </p>
+                <p style={{ fontSize: 12, opacity: 0.7, margin: "0 0 12px" }}>
+                  Recargando la aplicación...
+                </p>
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: 40, marginBottom: 12 }}>🔄</div>
+                <p style={{ fontWeight: 700, fontSize: 18, margin: "0 0 6px" }}>
+                  Actualizando datos locales
+                </p>
+                <p
+                  style={{
+                    fontSize: 12,
+                    opacity: 0.6,
+                    margin: "0 0 18px",
+                    minHeight: 18,
+                  }}
+                >
+                  {syncTabla ? `Tabla: ${syncTabla}` : "Preparando..."}
+                </p>
+                {/* Barra de progreso */}
+                <div
+                  style={{
+                    background: "#1e3a5f",
+                    borderRadius: 8,
+                    height: 12,
+                    overflow: "hidden",
+                  }}
+                >
+                  <div
+                    style={{
+                      height: "100%",
+                      borderRadius: 8,
+                      background: "linear-gradient(90deg,#1976d2,#42a5f5)",
+                      width: `${syncProgress}%`,
+                      transition: "width 0.3s ease",
+                    }}
+                  />
+                </div>
+                <p style={{ marginTop: 10, fontSize: 15, fontWeight: 700 }}>
+                  {syncProgress}%
+                </p>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -794,71 +913,7 @@ function App() {
         </p>
       </div>
 
-      {/* Componente de versión y actualización - visible en todas las vistas */}
-      {appVersion && (
-        <div
-          style={{
-            position: "fixed",
-            bottom: 10,
-            left: 18,
-            color: "#43a047",
-            fontSize: 12,
-            fontWeight: 700,
-            zIndex: 12000,
-            display: "flex",
-            gap: 8,
-            alignItems: "center",
-          }}
-        >
-          <span>Versión: {appVersion}</span>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button
-              onClick={() => {
-                setCheckingUpdate(true);
-                setUpdateMessage(null);
-                window.dispatchEvent(new CustomEvent("app:check-update"));
-              }}
-              style={{
-                background: "transparent",
-                border: "none",
-                color: "#2e7d32",
-                fontSize: 12,
-                textDecoration: "underline",
-                cursor: "pointer",
-                padding: 0,
-              }}
-              title="Buscar actualización ahora"
-            >
-              Buscar actualización
-            </button>
-            {checkingUpdate && (
-              <div
-                style={{
-                  width: 14,
-                  height: 14,
-                  border: "2px solid rgba(46,125,50,0.2)",
-                  borderTop: "2px solid #2e7d32",
-                  borderRadius: "50%",
-                  animation: "spin 0.8s linear infinite",
-                }}
-              />
-            )}
-          </div>
-          {updateMessage && (
-            <span
-              style={{
-                fontSize: 11,
-                color: updateMessage.includes("disponible")
-                  ? "#d32f2f"
-                  : "#2e7d32",
-                fontStyle: "italic",
-              }}
-            >
-              {updateMessage}
-            </span>
-          )}
-        </div>
-      )}
+      <VersionComponent />
     </>
   );
 }

@@ -1,6 +1,6 @@
 /**
  * localDB.ts — Base de datos local completa (offline-first)
- * DB_VERSION = 2 (v2 agrega cola_escrituras)
+ * DB_VERSION = 4 (v4 agrega configuraciones POS y piezas)
  */
 
 import { supabase } from "../supabaseClient";
@@ -8,7 +8,7 @@ import { compareTurnoRecordsByRecency } from "./fechas";
 
 // ─────────────────────────── Configuración DB ──────────────────────────────
 const DB_NAME = "CarnitasRoaLocalDB";
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 export const STORE = {
   VENTAS: "ventas",
@@ -20,7 +20,9 @@ export const STORE = {
   PRODUCTOS: "productos",
   DATOS_NEGOCIO: "datos_negocio",
   COMPLEMENTOS: "complementos_opciones",
+  PIEZAS_OPCIONES: "piezas_opciones",
   DESCUENTOS_CONFIG: "descuentos_config",
+  POS_CONFIG: "configuraciones_pos",
   PRECIO_DOLAR: "precio_dolar",
   CLAVES_AUTORIZACION: "claves_autorizacion",
   PAGOSF: "pagosf",
@@ -152,7 +154,9 @@ export function openLocalDB(): Promise<IDBDatabase> {
         ]);
         ensureStore(STORE.DATOS_NEGOCIO, { keyPath: "id" });
         ensureStore(STORE.COMPLEMENTOS, { keyPath: "id" });
+        ensureStore(STORE.PIEZAS_OPCIONES, { keyPath: "id" });
         ensureStore(STORE.DESCUENTOS_CONFIG, { keyPath: "id" });
+        ensureStore(STORE.POS_CONFIG, { keyPath: "id" });
         ensureStore(STORE.PRECIO_DOLAR, { keyPath: "id" });
         ensureStore(STORE.CLAVES_AUTORIZACION, { keyPath: "id" });
         ensureStore(STORE.PAGOSF, { keyPath: "id" }, [
@@ -217,6 +221,11 @@ export function openLocalDB(): Promise<IDBDatabase> {
         ensureStore(STORE.ORDENES_PRODUCCION_DET, { keyPath: "id" }, [
           { name: "orden_id", keyPath: "orden_id" },
         ]);
+      }
+
+      if (oldVersion < 4) {
+        ensureStore(STORE.PIEZAS_OPCIONES, { keyPath: "id" });
+        ensureStore(STORE.POS_CONFIG, { keyPath: "id" });
       }
     };
 
@@ -465,7 +474,9 @@ export async function sincronizarTodoDesdeSupabase(
     { tabla: "productos", store: STORE.PRODUCTOS },
     { tabla: "datos_negocio", store: STORE.DATOS_NEGOCIO },
     { tabla: "complementos_opciones", store: STORE.COMPLEMENTOS },
+    { tabla: "piezas_opciones", store: STORE.PIEZAS_OPCIONES },
     { tabla: "descuentos_config", store: STORE.DESCUENTOS_CONFIG },
+    { tabla: "configuraciones_pos", store: STORE.POS_CONFIG },
     { tabla: "precio_dolar", store: STORE.PRECIO_DOLAR },
     { tabla: "claves_autorizacion", store: STORE.CLAVES_AUTORIZACION },
     { tabla: "cai_facturas", store: STORE.CAI_FACTURAS },
@@ -558,8 +569,7 @@ export async function sincronizarTodoDesdeSupabase(
       const existentes = await getAll<any>(store);
       const pendientesOffline = existentes.filter(
         (r) =>
-          (typeof r.id === "number" && r.id < 0) ||
-          r.pending_sync === true,
+          (typeof r.id === "number" && r.id < 0) || r.pending_sync === true,
       );
       await clearStore(store);
       await upsertBulk(store, data ?? []);
@@ -676,10 +686,7 @@ export async function getAperturaActiva(
   // (los turnos de medianoche abren ayer y cierran hoy)
   const aperturasIDB = cierres
     .filter((c) => c.estado === "APERTURA")
-    .sort(
-      (a, b) =>
-        compareTurnoRecordsByRecency(a, b),
-    );
+    .sort((a, b) => compareTurnoRecordsByRecency(a, b));
   if (aperturasIDB[0]) return aperturasIDB[0];
 
   // Fallback: LocalStorage (por si IDB está vacío tras F5 sin internet)
@@ -734,6 +741,15 @@ export async function getDescuentosConfigLocal(): Promise<any[]> {
 
 export async function getComplementosLocal(): Promise<any[]> {
   return getAll(STORE.COMPLEMENTOS);
+}
+
+export async function getPiezasOpcionesLocal(): Promise<any[]> {
+  return getAll(STORE.PIEZAS_OPCIONES);
+}
+
+export async function getPosConfigLocal(): Promise<any | null> {
+  const rows = await getAll(STORE.POS_CONFIG);
+  return rows[0] ?? null;
 }
 
 export async function getUsuariosLocal(): Promise<any[]> {
@@ -897,8 +913,7 @@ export async function listarResumenesTurnos(
   const cierres = await getAll<any>(STORE.CIERRES);
   const aperturas = cierres
     .filter(
-      (c) =>
-        c.estado === "APERTURA" && (!cajeroId || c.cajero_id === cajeroId),
+      (c) => c.estado === "APERTURA" && (!cajeroId || c.cajero_id === cajeroId),
     )
     .sort(
       (a, b) =>

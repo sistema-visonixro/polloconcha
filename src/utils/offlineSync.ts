@@ -1707,11 +1707,18 @@ export async function actualizarCacheProductos(): Promise<{
   }
 
   try {
-    const { data: productos, error } = await supabase
+    let { data: productos, error } = await supabase
       .from("productos")
       .select("*")
       .eq("activo", true)
       .order("nombre");
+
+    // Compatibilidad: algunos esquemas no tienen columna "activo"
+    if (error && (error as any)?.code === "42703") {
+      const fallback = await supabase.from("productos").select("*").order("nombre");
+      productos = fallback.data;
+      error = fallback.error;
+    }
 
     if (error) {
       console.error("Error cargando productos desde Supabase:", error);

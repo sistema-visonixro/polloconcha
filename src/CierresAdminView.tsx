@@ -7,7 +7,52 @@ export default function CierresAdminView({
 }: {
   onVolver?: () => void;
 }) {
-  const [fecha, setFecha] = useState(() => {
+  const obtenerFechaLocalYMD = (value: any): string => {
+    if (!value) return "";
+    const raw = String(value);
+    if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10);
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  };
+
+  const normalizarFechaComparable = (value: any): string => {
+    if (!value) return "";
+    const raw = String(value).trim();
+    const isoRaw = raw.replace(" ", "T");
+    const date = new Date(isoRaw);
+    if (!Number.isNaN(date.getTime())) {
+      return date.toISOString();
+    }
+    return raw;
+  };
+
+  const aperturaTieneCierre = (ap: any, rows: any[]): boolean => {
+    if (ap?.estado === "CIERRE" || ap?.tipo_registro === "cierre") {
+      return true;
+    }
+
+    // Compatibilidad con registros antiguos donde el cierre pudo quedar en una fila aparte.
+    // En ese caso el cierre heredaba la misma fecha exacta de la apertura original.
+    const fechaApertura = normalizarFechaComparable(ap?.fecha);
+    return rows.some(
+      (ci) =>
+        ci?.id !== ap?.id &&
+        (ci?.estado === "CIERRE" || ci?.tipo_registro === "cierre") &&
+        ci?.caja === ap?.caja &&
+        ci?.cajero === ap?.cajero &&
+        normalizarFechaComparable(ci?.fecha) === fechaApertura,
+    );
+  };
+
+  const [fechaDesde, setFechaDesde] = useState(() => {
+    const { day } = getLocalDayRange();
+    return day;
+  });
+  const [fechaHasta, setFechaHasta] = useState(() => {
     const { day } = getLocalDayRange();
     return day;
   });
@@ -23,21 +68,22 @@ export default function CierresAdminView({
 
   useEffect(() => {
     cargarCierres();
-  }, [fecha]);
+  }, [fechaDesde, fechaHasta]);
 
   const cargarCierres = async () => {
     setLoading(true);
     try {
-      let query = supabase.from("cierres").select("*");
-      if (fecha) {
-        // construir rango a partir del día seleccionado (fecha en formato YYYY-MM-DD)
-        const start = new Date(`${fecha}T00:00:00`).toISOString();
-        const end = new Date(`${fecha}T23:59:59.999`).toISOString();
-        query = query.gte("fecha", start).lte("fecha", end);
-      }
-      const { data, error } = await query;
+      const { data, error } = await supabase.from("cierres").select("*");
       if (!error) {
-        setCierres(data || []);
+        const rows = data || [];
+        const filtrados = rows.filter((row: any) => {
+          const fecha = obtenerFechaLocalYMD(row?.fecha);
+          if (!fecha) return false;
+          if (fechaDesde && fecha < fechaDesde) return false;
+          if (fechaHasta && fecha > fechaHasta) return false;
+          return true;
+        });
+        setCierres(filtrados);
       }
     } catch (error) {
       console.error("Error loading cierres:", error);
@@ -54,6 +100,11 @@ export default function CierresAdminView({
   };
 
   const handleAbrirCierre = (ap: any) => {
+    if (aperturaTieneCierre(ap, cierres)) {
+      alert("Esta caja ya está cerrada para esa fecha.");
+      return;
+    }
+
     setCajaCierre(ap);
     setValoresCierre({
       fondoFijoRegistrado: 0,
@@ -80,17 +131,12 @@ export default function CierresAdminView({
   const aperturasFiltradas = cierres.filter(
     (c) =>
       c.tipo_registro === "apertura" &&
-      (fecha ? c.fecha.slice(0, 10) === fecha : true),
+      (fechaDesde ? obtenerFechaLocalYMD(c.fecha) >= fechaDesde : true) &&
+      (fechaHasta ? obtenerFechaLocalYMD(c.fecha) <= fechaHasta : true),
   );
 
   const cajasAbiertasList = aperturasFiltradas.filter((ap) => {
-    return !cierres.some(
-      (ci) =>
-        ci.tipo_registro === "cierre" &&
-        ci.caja === ap.caja &&
-        ci.cajero === ap.cajero &&
-        ci.fecha.slice(0, 10) === ap.fecha.slice(0, 10),
-    );
+    return !aperturaTieneCierre(ap, cierres);
   });
   const cajasAbiertas = cajasAbiertasList.length;
 
@@ -146,11 +192,10 @@ export default function CierresAdminView({
     setCierreError("");
 
     try {
-      const cierre = {
+      // UPDATE: cambiar la misma fila a cierre
+      const updates = {
+        estado: "CIERRE",
         tipo_registro: "cierre",
-        caja: cajaCierre.caja,
-        cajero: cajaCierre.cajero,
-        fecha: cajaCierre.fecha,
         fondo_fijo_registrado: valoresCierre.fondoFijoRegistrado,
         fondo_fijo: valoresCierre.fondoFijoDia,
         efectivo_registrado: valoresCierre.efectivoRegistrado,
@@ -163,7 +208,10 @@ export default function CierresAdminView({
         observacion: valoresCierre.observacion,
       };
 
-      const { error } = await supabase.from("cierres").insert([cierre]);
+      const { error } = await supabase
+        .from("cierres")
+        .update(updates)
+        .eq("id", cajaCierre.id);
       if (error) {
         setCierreError("Error al registrar el cierre: " + error.message);
       } else {
@@ -190,6 +238,25 @@ export default function CierresAdminView({
       }
     } catch (error) {
       console.error("Error aclarando cierre:", error);
+    }
+  };
+
+  const handleReaperturarCaja = async (row: any) => {
+    const ok = window.confirm(
+      `¿Reaperturar caja ${row?.caja || ""} para ${row?.cajero || ""}?`,
+    );
+    if (!ok) return;
+    try {
+      // UPDATE: cambiar la misma fila a apertura
+      const { error } = await supabase
+        .from("cierres")
+        .update({ estado: "APERTURA", tipo_registro: "apertura" })
+        .eq("id", row.id);
+      if (!error) {
+        await cargarCierres();
+      }
+    } catch (error) {
+      console.error("Error reaperturando caja:", error);
     }
   };
 
@@ -749,13 +816,27 @@ export default function CierresAdminView({
             <h1 className="page-title">🔒 Cierres Administrativos</h1>
           </div>
           <div className="header-controls">
+            <label style={{ fontSize: 12, color: "#64748b" }}>Desde</label>
             <input
               type="date"
-              value={fecha}
-              onChange={(e) => setFecha(e.target.value)}
+              value={fechaDesde}
+              onChange={(e) => setFechaDesde(e.target.value)}
               className="date-input"
             />
-            <button className="btn-secondary" onClick={() => setFecha("")}>
+            <label style={{ fontSize: 12, color: "#64748b" }}>Hasta</label>
+            <input
+              type="date"
+              value={fechaHasta}
+              onChange={(e) => setFechaHasta(e.target.value)}
+              className="date-input"
+            />
+            <button
+              className="btn-secondary"
+              onClick={() => {
+                setFechaDesde("");
+                setFechaHasta("");
+              }}
+            >
               Todos
             </button>
           </div>
@@ -868,6 +949,8 @@ export default function CierresAdminView({
               const fecha = c.fecha
                 ? c.fecha.slice(0, 16).replace("T", " ")
                 : "—";
+              const aperturaCerrada =
+                tipo === "apertura" ? aperturaTieneCierre(c, cierres) : false;
               const diferencia = parseFloat(c.diferencia || 0);
               const difClass =
                 diferencia > 0
@@ -1069,8 +1152,47 @@ export default function CierresAdminView({
                             ✅ Aclarar
                           </button>
                         )}
+                        <button
+                          className="btn-aclarar"
+                          onClick={() => handleReaperturarCaja(c)}
+                          style={{
+                            fontSize: 12,
+                            padding: "5px 12px",
+                            borderRadius: 8,
+                            border: "none",
+                            cursor: "pointer",
+                            background: "#1976d2",
+                            color: "#fff",
+                            fontWeight: 700,
+                          }}
+                        >
+                          🔓 Reaperturar caja
+                        </button>
                       </>
                     )}
+                    {tipo === "apertura" &&
+                      (aperturaCerrada ? (
+                        <span className="obs-badge obs-cuadrado">
+                          🔒 Cerrada
+                        </span>
+                      ) : (
+                        <button
+                          className="btn-aclarar"
+                          onClick={() => handleAbrirCierre(c)}
+                          style={{
+                            fontSize: 12,
+                            padding: "5px 12px",
+                            borderRadius: 8,
+                            border: "none",
+                            cursor: "pointer",
+                            background: "#f59e0b",
+                            color: "#fff",
+                            fontWeight: 700,
+                          }}
+                        >
+                          🔒 Cerrar caja
+                        </button>
+                      ))}
                   </div>
                 </div>
               );

@@ -63,6 +63,11 @@ import type {
 import { cargarPrinterConfig } from "./utils/printerConfig";
 import { imprimirReciboUSB, imprimirComandaUSB } from "./utils/webUsbPrinter";
 import type { DatosRecibo, DatosComanda } from "./utils/webUsbPrinter";
+import {
+  DEFAULT_POS_CONFIG,
+  obtenerPiezasOpciones,
+  obtenerPosConfig,
+} from "./services/posConfigService";
 
 interface Producto {
   id: string;
@@ -165,11 +170,6 @@ export default function PuntoDeVentaView({
   >(null);
 
   // Control de animación de menú
-  const openMenu = () => {
-    setMenuClosing(false);
-    setShowOptionsMenu(true);
-  };
-
   const closeMenuAnimated = () => {
     setMenuClosing(true);
     setTimeout(() => {
@@ -616,7 +616,6 @@ export default function PuntoDeVentaView({
         setShowResumen(false);
         return;
       }
-
     } catch (err) {
       console.error("Error al obtener resumen de caja:", err);
       setResumenData({
@@ -703,10 +702,7 @@ export default function PuntoDeVentaView({
               const ts = toTs(v.fecha_hora);
               return ts >= tsAp && v.tipo !== "CREDITO";
             })
-            .sort(
-              (a, b) =>
-                toTs(b.fecha_hora) - toTs(a.fecha_hora),
-            );
+            .sort((a, b) => toTs(b.fecha_hora) - toTs(a.fecha_hora));
           setHistorialVentas(ventasTurno);
           // Normalizar pagos desde IDB
           const pagosNorm: any[] = [];
@@ -791,10 +787,7 @@ export default function PuntoDeVentaView({
                 const ts = toTs(v.fecha_hora);
                 return ts >= tsAp && v.tipo !== "CREDITO";
               })
-              .sort(
-                (a, b) =>
-                  toTs(b.fecha_hora) - toTs(a.fecha_hora),
-              );
+              .sort((a, b) => toTs(b.fecha_hora) - toTs(a.fecha_hora));
             setHistorialVentas(ventasTurno);
             setHistorialPagos([]);
             setHistorialFiltroTipo(null);
@@ -1744,6 +1737,55 @@ export default function PuntoDeVentaView({
     number | null
   >(null);
   const [showPiezasModal, setShowPiezasModal] = useState(false);
+  const [posConfig, setPosConfig] = useState(DEFAULT_POS_CONFIG);
+  const [piezasOpciones, setPiezasOpciones] = useState<string[]>([
+    "PIEZAS VARIAS",
+    "PECHUGA",
+    "ALA",
+    "CADERA",
+    "PIERNA",
+  ]);
+
+  useEffect(() => {
+    (async () => {
+      const cfg = await obtenerPosConfig();
+      setPosConfig(cfg);
+      const piezas = await obtenerPiezasOpciones();
+      if (piezas.length > 0) {
+        setPiezasOpciones(piezas.map((p) => p.nombre));
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!posConfig.descuento_habilitado) {
+      setDescuentosProductos(new Set());
+    }
+    if (!posConfig.credito_habilitado) {
+      setShowCreditoClienteModal(false);
+      setShowHistorialCreditos(false);
+    }
+  }, [posConfig.descuento_habilitado, posConfig.credito_habilitado]);
+
+  const continuarFlujoDocumento = () => {
+    if (posConfig.tipo_venta === "solo_recibo") {
+      setTipoDocumentoFiscal("RECIBO");
+      setRtnCliente("");
+      setNombreClienteFiscal("");
+      setShowSarModal(false);
+      setShowPagoModal(true);
+      return;
+    }
+
+    if (posConfig.tipo_venta === "solo_factura") {
+      setTipoDocumentoFiscal("FACTURA");
+      setShowSarModal(false);
+      setShowPagoModal(true);
+      return;
+    }
+
+    setShowSarModal(true);
+  };
   const [complementosOpciones, setComplementosOpciones] = useState<string[]>(
     [],
   );
@@ -1938,6 +1980,38 @@ export default function PuntoDeVentaView({
       setPlatillosTurno(0);
       setBebidasTurno(0);
     } catch (_) {}
+  };
+
+  const openMenu = async () => {
+    if (posConfig.menu_bloqueado) {
+      const clave = window.prompt("🔐 Menú bloqueado. Ingrese clave de admin:");
+      if (!clave) return;
+
+      const pass = clave.trim();
+      const passLower = pass.toLowerCase();
+      let autorizado = passLower === "admin";
+
+      if (!autorizado) {
+        try {
+          const usuarios = await getUsuariosLocal();
+          autorizado = usuarios.some(
+            (u: any) =>
+              String(u?.rol || "").toLowerCase() === "admin" &&
+              String(u?.clave || "") === pass,
+          );
+        } catch {
+          autorizado = false;
+        }
+      }
+
+      if (!autorizado) {
+        alert("Clave incorrecta.");
+        return;
+      }
+    }
+
+    setMenuClosing(false);
+    setShowOptionsMenu(true);
   };
 
   useEffect(() => {
@@ -2251,14 +2325,15 @@ export default function PuntoDeVentaView({
           }
 
           // Determinar estado real del turno por el ÚLTIMO movimiento en cierres
-          const { data: ultimoMovimiento, error: aperturasError } = await supabase
-            .from("cierres")
-            .select("id, estado, cajero_id, caja, fecha")
-            .eq("cajero_id", usuarioActual.id)
-            .eq("caja", cajaAsignada)
-            .order("id", { ascending: false })
-            .limit(1)
-            .maybeSingle();
+          const { data: ultimoMovimiento, error: aperturasError } =
+            await supabase
+              .from("cierres")
+              .select("id, estado, cajero_id, caja, fecha")
+              .eq("cajero_id", usuarioActual.id)
+              .eq("caja", cajaAsignada)
+              .order("id", { ascending: false })
+              .limit(1)
+              .maybeSingle();
 
           // Si hay error de conexión, ir directo a cache
           if (aperturasError) {
@@ -2267,7 +2342,10 @@ export default function PuntoDeVentaView({
           }
 
           if (ultimoMovimiento?.estado === "APERTURA") {
-            console.log("✓ Apertura activa encontrada en Supabase:", ultimoMovimiento);
+            console.log(
+              "✓ Apertura activa encontrada en Supabase:",
+              ultimoMovimiento,
+            );
             setAperturaRegistrada(true);
 
             // Guardar en cache para uso offline
@@ -3048,7 +3126,7 @@ export default function PuntoDeVentaView({
           )[0];
           const cacheEsViejoCerrado =
             masReciente &&
-            masReciente.estado === "CIERRE" &&
+            (masReciente.tipo_registro === "cierre" || masReciente.estado === "CIERRE") &&
             compareTurnoRecordsByRecency(masReciente, aperturaCache as any) <=
               0;
 
@@ -3132,14 +3210,14 @@ export default function PuntoDeVentaView({
       // ── Capa 4 (extra): verificar en Supabase el último movimiento real ──
       const { data: ultimoMovimiento } = await supabase
         .from("cierres")
-        .select("id, cajero_id, caja, fecha, estado")
+        .select("id, cajero_id, caja, fecha, tipo_registro, estado")
         .eq("cajero_id", usuarioActual.id)
         .eq("caja", cajaAsignada)
         .order("id", { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      if (ultimoMovimiento?.estado === "APERTURA") {
+      if (ultimoMovimiento?.tipo_registro === "apertura" || ultimoMovimiento?.estado === "APERTURA") {
         console.log(
           "✓ Apertura activa encontrada en Supabase → no se crea duplicado",
         );
@@ -3217,8 +3295,19 @@ export default function PuntoDeVentaView({
   );
 
   // Descuento acumulado: 1 descuento de montoDescuentoComida por cada producto marcado
-  const totalDescuento = descuentosProductos.size * montoDescuentoComida;
+  const totalDescuento = posConfig.descuento_habilitado
+    ? descuentosProductos.size * montoDescuentoComida
+    : 0;
   const totalConDescuento = Math.max(0, total - totalDescuento);
+  const mostrarReciboEnHeader = posConfig.tipo_venta !== "solo_factura";
+  const textoCajeroHeader = caiInfo
+    ? `${caiInfo.nombre_cajero} | Caja: ${caiInfo.caja_asignada}`
+    : "";
+  const textoReciboHeader =
+    mostrarReciboEnHeader && facturaActual ? `Recibo: ${facturaActual}` : "";
+  const tituloHeaderCajero = caiInfo
+    ? `${textoCajeroHeader}${textoReciboHeader ? ` | ${textoReciboHeader}` : ""}`
+    : textoReciboHeader;
 
   // Filter products by type and subcategory
   const productosFiltrados = productos.filter((p) => {
@@ -3364,23 +3453,14 @@ export default function PuntoDeVentaView({
               maxWidth: "48vw",
               display: "inline-block",
             }}
-            title={
-              caiInfo
-                ? `${caiInfo.nombre_cajero} | Caja: ${caiInfo.caja_asignada}${
-                    facturaActual ? ` | Recibo: ${facturaActual}` : ""
-                  }`
-                : facturaActual
-                  ? `Recibo: ${facturaActual}`
-                  : ""
-            }
+            title={tituloHeaderCajero}
           >
-            {caiInfo &&
-              `${caiInfo.nombre_cajero} | Caja: ${caiInfo.caja_asignada}`}
-            {caiInfo && facturaActual
-              ? ` | Recibo: ${facturaActual}`
-              : !caiInfo && facturaActual
-                ? `Recibo: ${facturaActual}`
-                : ""}
+            {caiInfo ? textoCajeroHeader : ""}
+            {textoReciboHeader
+              ? caiInfo
+                ? ` | ${textoReciboHeader}`
+                : textoReciboHeader
+              : ""}
           </span>
           {/* Botones de tema y funciones principales en la misma fila */}
           <div
@@ -4158,8 +4238,10 @@ export default function PuntoDeVentaView({
                         sarNumeroSecuencial = actual;
                         sarCaiFactura = caiFact.cai || "";
                         sarFechaLimiteEmision = caiFact.fecha_limite_emision;
-                        sarRangoDesde = Number(caiFact.rango_desde || 0) || null;
-                        sarRangoHasta = Number(caiFact.rango_hasta || 0) || null;
+                        sarRangoDesde =
+                          Number(caiFact.rango_desde || 0) || null;
+                        sarRangoHasta =
+                          Number(caiFact.rango_hasta || 0) || null;
                       }
                     }
                   } catch {
@@ -4539,7 +4621,8 @@ export default function PuntoDeVentaView({
                   const siguienteDisplay = (numUsado + 1).toString();
                   try {
                     await persistirReciboActual(siguienteDisplay, {
-                      actualizarSupabase: isOnline && Boolean(usuarioActual?.id),
+                      actualizarSupabase:
+                        isOnline && Boolean(usuarioActual?.id),
                     });
                   } catch (err) {
                     console.error(
@@ -5538,7 +5621,9 @@ export default function PuntoDeVentaView({
                               ).toString();
                               try {
                                 await persistirReciboActual(siguienteDisplay, {
-                                  actualizarSupabase: Boolean(usuarioActual?.id),
+                                  actualizarSupabase: Boolean(
+                                    usuarioActual?.id,
+                                  ),
                                 });
                               } catch (err) {
                                 console.error(
@@ -5635,7 +5720,8 @@ export default function PuntoDeVentaView({
                   const nuevaFactura = (numUsado + 1).toString();
                   try {
                     await persistirReciboActual(nuevaFactura, {
-                      actualizarSupabase: !usandoRpc && Boolean(usuarioActual?.id),
+                      actualizarSupabase:
+                        !usandoRpc && Boolean(usuarioActual?.id),
                     });
                     console.log(
                       `[facturar] op=${operationId} → factura_actual RECIBO actualizada a ${nuevaFactura}`,
@@ -5649,7 +5735,10 @@ export default function PuntoDeVentaView({
                 }
               }
 
-              if (tipoDocumentoFiscal === TIPO_FACTURA && facturaParaEstaVenta) {
+              if (
+                tipoDocumentoFiscal === TIPO_FACTURA &&
+                facturaParaEstaVenta
+              ) {
                 const secuencialUsado =
                   sarNumeroSecuencial ??
                   parseSecuencialDocumento(facturaParaEstaVenta);
@@ -6302,33 +6391,35 @@ export default function PuntoDeVentaView({
                   Pedido por Teléfono
                 </button>
 
-                <button
-                  style={{
-                    background: "linear-gradient(90deg,#7c3aed,#6d28d9)",
-                    color: "#fff",
-                    border: "none",
-                    borderRadius: 10,
-                    padding: "10px 20px",
-                    fontWeight: 700,
-                    fontSize: 15,
-                    cursor:
-                      seleccionados.length === 0 ? "not-allowed" : "pointer",
-                    opacity: seleccionados.length === 0 ? 0.5 : 1,
-                    boxShadow: "0 6px 18px rgba(124,58,237,0.25)",
-                    transition:
-                      "transform 0.18s, box-shadow 0.18s, opacity 0.18s",
-                  }}
-                  disabled={seleccionados.length === 0}
-                  onClick={() => {
-                    if (facturaActual === "Límite alcanzado") {
-                      alert("¡Límite de facturas alcanzado!");
-                      return;
-                    }
-                    setShowCreditoClienteModal(true);
-                  }}
-                >
-                  💳 Facturar a Crédito
-                </button>
+                {posConfig.credito_habilitado && (
+                  <button
+                    style={{
+                      background: "linear-gradient(90deg,#7c3aed,#6d28d9)",
+                      color: "#fff",
+                      border: "none",
+                      borderRadius: 10,
+                      padding: "10px 20px",
+                      fontWeight: 700,
+                      fontSize: 15,
+                      cursor:
+                        seleccionados.length === 0 ? "not-allowed" : "pointer",
+                      opacity: seleccionados.length === 0 ? 0.5 : 1,
+                      boxShadow: "0 6px 18px rgba(124,58,237,0.25)",
+                      transition:
+                        "transform 0.18s, box-shadow 0.18s, opacity 0.18s",
+                    }}
+                    disabled={seleccionados.length === 0}
+                    onClick={() => {
+                      if (facturaActual === "Límite alcanzado") {
+                        alert("¡Límite de facturas alcanzado!");
+                        return;
+                      }
+                      setShowCreditoClienteModal(true);
+                    }}
+                  >
+                    💳 Facturar a Crédito
+                  </button>
+                )}
               </div>
 
               <div
@@ -6341,10 +6432,6 @@ export default function PuntoDeVentaView({
                   fontSize: 13,
                   color: theme === "lite" ? "#475569" : "#cfd8dc",
                   marginBottom: 0,
-                  borderBottom:
-                    theme === "lite"
-                      ? "1px solid #e1eef9"
-                      : "1px solid #2f3f43",
                 }}
               >
                 <div style={{ flex: 2 }}>Producto</div>
@@ -6395,84 +6482,111 @@ export default function PuntoDeVentaView({
                       color: theme === "lite" ? "#0f1724" : "#f5f5f5",
                     }}
                   >
-                    {/* Buttons first for easier reach on touch devices */}
                     <div
                       style={{
                         order: 0,
                         display: "flex",
                         gap: 6,
                         alignItems: "center",
-                        width: p.tipo === "comida" ? 108 : 36,
-                        flex: p.tipo === "comida" ? "0 0 108px" : "0 0 36px",
+                        flex: "0 0 auto",
                       }}
                     >
                       {p.tipo === "comida" && (
                         <>
-                          <button
-                            onClick={() => {
-                              setSelectedProductIndex(index);
-                              setShowComplementosModal(true);
-                            }}
-                            style={{
-                              background: "#4caf50",
-                              color: "#fff",
-                              border: "none",
-                              borderRadius: 4,
-                              width: 32,
-                              height: 32,
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              cursor: "pointer",
-                              fontSize: 16,
-                              lineHeight: 1,
-                            }}
-                            title="Complementos Incluidos"
-                            aria-label={`Complementos de ${p.nombre}`}
-                          >
-                            🍗
-                          </button>
-                          {/* Botón de descuento L 20 — solo comida */}
-                          <button
-                            onClick={() => {
-                              setDescuentosProductos((prev) => {
-                                const newSet = new Set(prev);
-                                if (newSet.has(p.id)) {
-                                  newSet.delete(p.id);
-                                } else {
-                                  newSet.add(p.id);
-                                }
-                                return newSet;
-                              });
-                            }}
-                            style={{
-                              background: descuentosProductos.has(p.id)
-                                ? "#ff9800"
-                                : "#607d8b",
-                              color: "#fff",
-                              border: descuentosProductos.has(p.id)
-                                ? "2px solid #e65100"
-                                : "2px solid transparent",
-                              borderRadius: 4,
-                              width: 32,
-                              height: 32,
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              cursor: "pointer",
-                              fontSize: 13,
-                              fontWeight: 800,
-                              lineHeight: 1,
-                            }}
-                            title={
-                              descuentosProductos.has(p.id)
-                                ? `Quitar descuento (-L ${montoDescuentoComida})`
-                                : `Aplicar descuento (-L ${montoDescuentoComida})`
-                            }
-                            aria-label={`Descuento ${p.nombre}`}
-                          >
-                            %
-                          </button>
+                          {posConfig.complementos_habilitado && (
+                            <button
+                              onClick={() => {
+                                setSelectedProductIndex(index);
+                                setShowComplementosModal(true);
+                              }}
+                              style={{
+                                background: "#4caf50",
+                                color: "#fff",
+                                border: "none",
+                                borderRadius: 4,
+                                width: 32,
+                                height: 32,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                cursor: "pointer",
+                                fontSize: 16,
+                                lineHeight: 1,
+                              }}
+                              title="Complementos Incluidos"
+                              aria-label={`Complementos de ${p.nombre}`}
+                            >
+                              🍗
+                            </button>
+                          )}
+                          {posConfig.piezas_habilitado && (
+                            <button
+                              onClick={() => {
+                                setSelectedProductIndex(index);
+                                setShowPiezasModal(true);
+                              }}
+                              style={{
+                                background: "#f59e0b",
+                                color: "#fff",
+                                border: "none",
+                                borderRadius: 4,
+                                width: 32,
+                                height: 32,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                cursor: "pointer",
+                                fontSize: 16,
+                                lineHeight: 1,
+                              }}
+                              title="Piezas"
+                              aria-label={`Piezas de ${p.nombre}`}
+                            >
+                              🍖
+                            </button>
+                          )}
+                          {posConfig.descuento_habilitado && (
+                            <button
+                              onClick={() => {
+                                setDescuentosProductos((prev) => {
+                                  const newSet = new Set(prev);
+                                  if (newSet.has(p.id)) {
+                                    newSet.delete(p.id);
+                                  } else {
+                                    newSet.add(p.id);
+                                  }
+                                  return newSet;
+                                });
+                              }}
+                              style={{
+                                background: descuentosProductos.has(p.id)
+                                  ? "#ff9800"
+                                  : "#607d8b",
+                                color: "#fff",
+                                border: descuentosProductos.has(p.id)
+                                  ? "2px solid #e65100"
+                                  : "2px solid transparent",
+                                borderRadius: 4,
+                                width: 32,
+                                height: 32,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                cursor: "pointer",
+                                fontSize: 13,
+                                fontWeight: 800,
+                                lineHeight: 1,
+                              }}
+                              title={
+                                descuentosProductos.has(p.id)
+                                  ? `Quitar descuento (-L ${montoDescuentoComida})`
+                                  : `Aplicar descuento (-L ${montoDescuentoComida})`
+                              }
+                              aria-label={`Descuento ${p.nombre}`}
+                            >
+                              %
+                            </button>
+                          )}
                         </>
                       )}
                       <button
@@ -6497,7 +6611,6 @@ export default function PuntoDeVentaView({
                         −
                       </button>
                     </div>
-
                     <div
                       style={{
                         order: 1,
@@ -6540,7 +6653,6 @@ export default function PuntoDeVentaView({
                         </div>
                       )}
                     </div>
-
                     <div
                       style={{
                         order: 2,
@@ -6552,7 +6664,6 @@ export default function PuntoDeVentaView({
                     >
                       L {p.precio.toFixed(2)}
                     </div>
-
                     <div
                       style={{
                         order: 3,
@@ -6566,7 +6677,6 @@ export default function PuntoDeVentaView({
                     >
                       x{p.cantidad}
                     </div>
-
                     <div
                       style={{
                         order: 4,
@@ -6995,79 +7105,77 @@ export default function PuntoDeVentaView({
               {seleccionados[selectedProductIndex]?.nombre}
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {["PIEZAS VARIAS", "PECHUGA", "ALA", "CADERA", "PIERNA"].map(
-                (pieza) => {
-                  const currentPiezas =
-                    seleccionados[selectedProductIndex]?.piezas ||
-                    "PIEZAS VARIAS";
-                  const piezasArray = currentPiezas.split(", ");
-                  const isSelected = piezasArray.includes(pieza);
+              {piezasOpciones.map((pieza) => {
+                const currentPiezas =
+                  seleccionados[selectedProductIndex]?.piezas ||
+                  "PIEZAS VARIAS";
+                const piezasArray = currentPiezas.split(", ");
+                const isSelected = piezasArray.includes(pieza);
 
-                  return (
-                    <button
-                      key={pieza}
-                      onClick={() => {
-                        const newSeleccionados = [...seleccionados];
-                        let newPiezas: string[];
+                return (
+                  <button
+                    key={pieza}
+                    onClick={() => {
+                      const newSeleccionados = [...seleccionados];
+                      let newPiezas: string[];
 
-                        if (pieza === "PIEZAS VARIAS") {
-                          // Si selecciona PIEZAS VARIAS, deseleccionar todo lo demás
-                          newPiezas = ["PIEZAS VARIAS"];
-                        } else {
-                          // Si selecciona otra pieza, quitar PIEZAS VARIAS
-                          newPiezas = piezasArray.filter(
-                            (p) => p !== "PIEZAS VARIAS",
-                          );
+                      if (pieza === "PIEZAS VARIAS") {
+                        // Si selecciona PIEZAS VARIAS, deseleccionar todo lo demás
+                        newPiezas = ["PIEZAS VARIAS"];
+                      } else {
+                        // Si selecciona otra pieza, quitar PIEZAS VARIAS
+                        newPiezas = piezasArray.filter(
+                          (p) => p !== "PIEZAS VARIAS",
+                        );
 
-                          if (isSelected) {
-                            // Deseleccionar
-                            newPiezas = newPiezas.filter((p) => p !== pieza);
-                            // Si no queda nada, volver a PIEZAS VARIAS
-                            if (newPiezas.length === 0) {
-                              newPiezas = ["PIEZAS VARIAS"];
-                            }
-                          } else {
-                            // Seleccionar
-                            newPiezas.push(pieza);
+                        if (isSelected) {
+                          // Deseleccionar
+                          newPiezas = newPiezas.filter((p) => p !== pieza);
+                          // Si no queda nada, volver a PIEZAS VARIAS
+                          if (newPiezas.length === 0) {
+                            newPiezas = ["PIEZAS VARIAS"];
                           }
+                        } else {
+                          // Seleccionar
+                          newPiezas.push(pieza);
                         }
+                      }
 
-                        newSeleccionados[selectedProductIndex] = {
-                          ...newSeleccionados[selectedProductIndex],
-                          piezas: newPiezas.join(", "),
-                        };
-                        setSeleccionados(newSeleccionados);
-                      }}
-                      style={{
-                        background: isSelected
-                          ? "linear-gradient(135deg, #ff9800 0%, #f57c00 100%)"
-                          : theme === "lite"
-                            ? "#f5f5f5"
-                            : "#424242",
-                        color: isSelected
-                          ? "#fff"
-                          : theme === "lite"
-                            ? "#222"
-                            : "#f5f5f5",
-                        borderRadius: 10,
-                        border: isSelected
-                          ? "3px solid #f57c00"
-                          : "2px solid #ddd",
-                        padding: "16px 24px",
-                        fontWeight: isSelected ? 700 : 600,
-                        fontSize: 16,
-                        cursor: "pointer",
-                        transition: "all 0.2s",
-                        boxShadow: isSelected
-                          ? "0 4px 15px rgba(255,152,0,0.4)"
-                          : "none",
-                      }}
-                    >
-                      {pieza}
-                    </button>
-                  );
-                },
-              )}
+                      newSeleccionados[selectedProductIndex] = {
+                        ...newSeleccionados[selectedProductIndex],
+                        piezas: newPiezas.join(", "),
+                      };
+                      setSeleccionados(newSeleccionados);
+                    }}
+                    style={{
+                      background: isSelected
+                        ? "linear-gradient(135deg, #ff9800 0%, #f57c00 100%)"
+                        : theme === "lite"
+                          ? "#f5f5f5"
+                          : "#424242",
+                      color: isSelected
+                        ? "#fff"
+                        : theme === "lite"
+                          ? "#222"
+                          : "#f5f5f5",
+                      borderRadius: 10,
+                      border: isSelected
+                        ? "3px solid #f57c00"
+                        : "2px solid #ddd",
+                      padding: "16px 24px",
+                      fontWeight: isSelected ? 700 : 600,
+                      fontSize: 16,
+                      cursor: "pointer",
+                      transition: "all 0.2s",
+                      boxShadow: isSelected
+                        ? "0 4px 15px rgba(255,152,0,0.4)"
+                        : "none",
+                    }}
+                  >
+                    {pieza}
+                  </button>
+                );
+              })}
             </div>
             <button
               onClick={() => {
@@ -7144,7 +7252,7 @@ export default function PuntoDeVentaView({
                   // "Continuar" si tiene el foco, disparando dos veces
                   e.preventDefault();
                   setShowClienteModal(false);
-                  setShowSarModal(true);
+                  continuarFlujoDocumento();
                 }
               }}
               style={{
@@ -7175,7 +7283,7 @@ export default function PuntoDeVentaView({
                 onClick={() => {
                   if (nombreCliente.trim()) {
                     setShowClienteModal(false);
-                    setShowSarModal(true);
+                    continuarFlujoDocumento();
                   }
                 }}
                 style={{
@@ -7197,7 +7305,7 @@ export default function PuntoDeVentaView({
       )}
 
       {/* ── Modal SAR Honduras: selección de tipo de documento fiscal ───────── */}
-      {showSarModal && (
+      {showSarModal && posConfig.tipo_venta === "ambos" && (
         <div
           style={{
             position: "fixed",
@@ -9036,7 +9144,7 @@ export default function PuntoDeVentaView({
                                   setRtnCliente("");
                                   setShowPagoModal(false);
                                   setShowPedidosModal(false);
-                                  setShowSarModal(true);
+                                  continuarFlujoDocumento();
                                 }}
                                 style={{
                                   background: "#e8f5e9",
@@ -10384,25 +10492,29 @@ export default function PuntoDeVentaView({
                       <div className="btn-desc">Ventas registradas</div>
                     </span>
                   </button>
-                  <button
-                    className="menu-btn"
-                    onClick={() => {
-                      fetchHistorialCreditos();
-                      closeMenuAnimated();
-                    }}
-                    style={{
-                      background: "linear-gradient(135deg, #fff7ed, #ffedd5)",
-                      color: "#9a3412",
-                      border: "1px solid #fb923c",
-                      animationDelay: "360ms",
-                    }}
-                  >
-                    <span className="btn-icon">📄</span>
-                    <span>
-                      <div className="btn-label">Facturas Crédito</div>
-                      <div className="btn-desc">Ventas a crédito del turno</div>
-                    </span>
-                  </button>
+                  {posConfig.credito_habilitado && (
+                    <button
+                      className="menu-btn"
+                      onClick={() => {
+                        fetchHistorialCreditos();
+                        closeMenuAnimated();
+                      }}
+                      style={{
+                        background: "linear-gradient(135deg, #fff7ed, #ffedd5)",
+                        color: "#9a3412",
+                        border: "1px solid #fb923c",
+                        animationDelay: "360ms",
+                      }}
+                    >
+                      <span className="btn-icon">📄</span>
+                      <span>
+                        <div className="btn-label">Facturas Crédito</div>
+                        <div className="btn-desc">
+                          Ventas a crédito del turno
+                        </div>
+                      </span>
+                    </button>
+                  )}
                   <button
                     className="menu-btn"
                     onClick={() => {

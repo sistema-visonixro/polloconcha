@@ -1341,8 +1341,8 @@ export default function MovimientosInventarioView({
   const cardStyle: CSSProperties = {
     background: "white",
     border: "1px solid #e2e8f0",
-    borderRadius: 16,
-    boxShadow: "0 10px 30px rgba(15, 23, 42, 0.08)",
+    borderRadius: 18,
+    boxShadow: "0 8px 24px rgba(15, 23, 42, 0.08)",
     padding: 20,
   };
 
@@ -1350,7 +1350,7 @@ export default function MovimientosInventarioView({
     <div
       style={{
         minHeight: "100vh",
-        background: "linear-gradient(135deg, #f8fafc 0%, #e0e7ff 100%)",
+        background: "linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%)",
         padding: 24,
       }}
     >
@@ -1358,25 +1358,29 @@ export default function MovimientosInventarioView({
         .inventory-grid { display: grid; gap: 16px; }
         .inventory-top-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
         .inventory-main-grid { grid-template-columns: 1.3fr 1fr; align-items: start; }
-        .inventory-table { width: 100%; border-collapse: collapse; }
+        .inventory-table { width: 100%; border-collapse: separate; border-spacing: 0; }
         .inventory-table th, .inventory-table td { padding: 12px; border-bottom: 1px solid #e2e8f0; text-align: left; }
-        .inventory-table th { background: #f8fafc; color: #0f172a; font-size: 0.86rem; }
-        .inventory-table td { color: #334155; font-size: 0.92rem; }
+        .inventory-table th { background: #f8fafc; color: #0f172a; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.02em; }
+        .inventory-table td { color: #334155; font-size: 0.91rem; background: #fff; }
+        .inventory-table tr:hover td { background: #f8fafc; }
         .inventory-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
         .inventory-input, .inventory-select, .inventory-textarea {
           width: 100%; border: 1px solid #cbd5e1; border-radius: 10px; padding: 10px 12px;
-          font-size: 0.95rem; background: white;
+          font-size: 0.95rem; background: white; color: #0f172a;
         }
+        .inventory-input::placeholder, .inventory-textarea::placeholder { color: #94a3b8; }
         .inventory-textarea { min-height: 92px; resize: vertical; }
+        label { color: #334155; font-size: 0.85rem; font-weight: 600; display: inline-block; margin-bottom: 6px; }
         .inventory-tab {
-          border: none; border-radius: 999px; padding: 10px 14px; cursor: pointer;
-          font-weight: 700; color: #334155; background: #e2e8f0;
+          border: 1px solid #cbd5e1; border-radius: 999px; padding: 9px 14px; cursor: pointer;
+          font-weight: 700; color: #334155; background: #f8fafc;
         }
-        .inventory-tab.active { background: linear-gradient(135deg, #2563eb, #4f46e5); color: white; }
+        .inventory-tab.active { background: linear-gradient(135deg, #2563eb, #4f46e5); color: white; border-color: transparent; box-shadow: 0 8px 18px rgba(37,99,235,.25); }
         .inventory-btn {
           border: none; border-radius: 10px; padding: 10px 14px; font-weight: 700;
-          cursor: pointer;
+          cursor: pointer; transition: transform .15s ease, box-shadow .15s ease;
         }
+        .inventory-btn:hover { transform: translateY(-1px); }
         .inventory-btn.primary { background: linear-gradient(135deg, #2563eb, #4f46e5); color: white; }
         .inventory-btn.success { background: linear-gradient(135deg, #059669, #10b981); color: white; }
         .inventory-btn.secondary { background: #e2e8f0; color: #0f172a; }
@@ -1384,8 +1388,43 @@ export default function MovimientosInventarioView({
           display: inline-flex; align-items: center; gap: 6px; border-radius: 999px;
           padding: 4px 10px; font-size: 0.78rem; font-weight: 700; background: #dbeafe; color: #1d4ed8;
         }
+
+        .inventory-modal-overlay {
+          position: fixed;
+          inset: 0;
+          background: rgba(15,23,42,0.52);
+          z-index: 1000;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 16px;
+        }
+        .inventory-modal {
+          width: min(860px, 100%);
+          max-height: 90vh;
+          overflow: auto;
+          background: #ffffff;
+          color: #0f172a;
+          border: 1px solid #e2e8f0;
+          border-radius: 18px;
+          box-shadow: 0 24px 60px rgba(15,23,42,0.28);
+          padding: 24px;
+        }
+        .inventory-modal h3 { color: #0f172a; }
+        .inventory-modal p { color: #64748b; }
+        .inventory-modal label { color: #334155 !important; }
+        .inventory-modal .inventory-input,
+        .inventory-modal .inventory-select,
+        .inventory-modal .inventory-textarea {
+          color: #0f172a;
+          background: #ffffff;
+        }
         @media (max-width: 1100px) {
           .inventory-main-grid { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 768px) {
+          .inventory-modal { padding: 16px; border-radius: 14px; max-height: 92vh; }
+          .inventory-table th, .inventory-table td { padding: 10px; }
         }
       `}</style>
 
@@ -2723,29 +2762,12 @@ export default function MovimientosInventarioView({
       {/* ── Modal configuración umbrales de stock ────────────────────── */}
       {stockConfigModal?.open && (
         <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(15,23,42,0.45)",
-            zIndex: 1000,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
+          className="inventory-modal-overlay"
           onClick={(e) => {
             if (e.target === e.currentTarget) setStockConfigModal(null);
           }}
         >
-          <div
-            style={{
-              background: "white",
-              borderRadius: 16,
-              boxShadow: "0 20px 60px rgba(15,23,42,0.2)",
-              padding: 28,
-              width: "100%",
-              maxWidth: 420,
-            }}
-          >
+          <div className="inventory-modal" style={{ maxWidth: 520 }}>
             <h3 style={{ margin: "0 0 6px", color: "#0f172a" }}>
               ⚙ Umbrales de stock
             </h3>
@@ -2855,32 +2877,12 @@ export default function MovimientosInventarioView({
       {/* ── Modal: Registrar movimiento manual ─────────────────────────── */}
       {movFormModalOpen && (
         <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(15,23,42,0.45)",
-            zIndex: 1000,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 16,
-          }}
+          className="inventory-modal-overlay"
           onClick={(e) => {
             if (e.target === e.currentTarget) setMovFormModalOpen(false);
           }}
         >
-          <div
-            style={{
-              background: "white",
-              borderRadius: 16,
-              boxShadow: "0 20px 60px rgba(15,23,42,0.2)",
-              padding: 28,
-              width: "100%",
-              maxWidth: 680,
-              maxHeight: "90vh",
-              overflowY: "auto",
-            }}
-          >
+          <div className="inventory-modal" style={{ maxWidth: 760 }}>
             <div
               style={{
                 display: "flex",
@@ -3342,30 +3344,12 @@ export default function MovimientosInventarioView({
       {/* ── Modal: Editar movimiento ─────────────────────────────────────── */}
       {editMovModal && (
         <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(15,23,42,0.45)",
-            zIndex: 1000,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 16,
-          }}
+          className="inventory-modal-overlay"
           onClick={(e) => {
             if (e.target === e.currentTarget) setEditMovModal(null);
           }}
         >
-          <div
-            style={{
-              background: "white",
-              borderRadius: 16,
-              boxShadow: "0 20px 60px rgba(15,23,42,0.2)",
-              padding: 28,
-              width: "100%",
-              maxWidth: 480,
-            }}
-          >
+          <div className="inventory-modal" style={{ maxWidth: 540 }}>
             <h3 style={{ margin: "0 0 4px", color: "#0f172a" }}>
               ✏ Editar movimiento
             </h3>
