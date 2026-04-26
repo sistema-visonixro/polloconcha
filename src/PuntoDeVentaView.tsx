@@ -632,6 +632,15 @@ export default function PuntoDeVentaView({
     setShowHistorialVentas(true);
     setHistorialLoading(true);
     try {
+      const toTs = (value: any): number => {
+        if (!value) return 0;
+        if (typeof value === "number") return value;
+        const raw = String(value).trim();
+        const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+        const ts = Date.parse(normalized);
+        return Number.isFinite(ts) ? ts : 0;
+      };
+
       // ── IDB primero (siempre, sin depender de navigator.onLine) ──────────
       {
         const cierresIDB = await getByIndex<any>(
@@ -681,21 +690,20 @@ export default function PuntoDeVentaView({
         }
         if (aperturaIDB) {
           const cajeroIdFinal = aperturaIDB.cajero_id ?? usuarioActual?.id;
-          const tsAp = new Date(aperturaIDB.fecha ?? 0).getTime();
+          const tsAp = toTs(aperturaIDB.fecha);
           const todasVentas = cajeroIdFinal
             ? await getByIndex<any>(STORE.VENTAS, "cajero_id", cajeroIdFinal)
             : await getAll<any>(STORE.VENTAS);
           const ventasTurno = todasVentas
             .filter((v) => {
-              const ts = new Date(v.fecha_hora ?? 0).getTime();
+              const ts = toTs(v.fecha_hora);
               return (
                 ts >= tsAp && v.tipo !== "CREDITO" && v.tipo !== "DEVOLUCION"
               );
             })
             .sort(
               (a, b) =>
-                new Date(b.fecha_hora ?? 0).getTime() -
-                new Date(a.fecha_hora ?? 0).getTime(),
+                toTs(b.fecha_hora) - toTs(a.fecha_hora),
             );
           setHistorialVentas(ventasTurno);
           // Normalizar pagos desde IDB
@@ -771,20 +779,19 @@ export default function PuntoDeVentaView({
             lsAp &&
             (!usuarioActual?.id || lsAp.cajero_id === usuarioActual.id)
           ) {
-            const tsAp = new Date(lsAp.fecha ?? 0).getTime();
+            const tsAp = toTs(lsAp.fecha);
             const cajeroIdFinal = lsAp.cajero_id ?? usuarioActual?.id;
             const todasVentas = cajeroIdFinal
               ? await getByIndex<any>(STORE.VENTAS, "cajero_id", cajeroIdFinal)
               : await getAll<any>(STORE.VENTAS);
             const ventasTurno = todasVentas
               .filter((v) => {
-                const ts = new Date(v.fecha_hora ?? 0).getTime();
+                const ts = toTs(v.fecha_hora);
                 return ts >= tsAp && v.tipo !== "CREDITO";
               })
               .sort(
                 (a, b) =>
-                  new Date(b.fecha_hora ?? 0).getTime() -
-                  new Date(a.fecha_hora ?? 0).getTime(),
+                  toTs(b.fecha_hora) - toTs(a.fecha_hora),
               );
             setHistorialVentas(ventasTurno);
             setHistorialPagos([]);
@@ -10194,7 +10201,7 @@ export default function PuntoDeVentaView({
                         const caiLocal = caiRows.find(
                           (r) =>
                             r.cajero_id === usuarioActual?.id &&
-                            r.tipo_comprobante === "FACTURA" &&
+                            r.tipo_comprobante === "RECIBO" &&
                             r.activo !== false,
                         );
                         if (caiLocal) {
@@ -10205,7 +10212,7 @@ export default function PuntoDeVentaView({
                             .from("cai_facturas")
                             .select("*")
                             .eq("cajero_id", usuarioActual?.id)
-                            .eq("tipo_comprobante", "FACTURA")
+                            .eq("tipo_comprobante", "RECIBO")
                             .eq("activo", true)
                             .order("id", { ascending: false })
                             .limit(1)
@@ -10521,7 +10528,7 @@ export default function PuntoDeVentaView({
                           }}
                         >
                           <th style={{ padding: 8 }}>Hora</th>
-                          <th style={{ padding: 8 }}>Factura</th>
+                          <th style={{ padding: 8 }}>Documento</th>
                           <th style={{ padding: 8 }}>Cliente</th>
                           <th style={{ padding: 8 }}>Tipo Pago</th>
                           <th style={{ padding: 8 }}>🍖/🥤</th>
@@ -11371,7 +11378,7 @@ export default function PuntoDeVentaView({
                 {[
                   { label: "CAI", value: caiFactData.cai, mono: true },
                   {
-                    label: "No. Factura Actual",
+                    label: "No. Recibo Actual",
                     value: caiFactData.factura_actual,
                   },
                   { label: "Rango Desde", value: caiFactData.rango_desde },
