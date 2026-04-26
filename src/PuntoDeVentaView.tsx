@@ -2250,15 +2250,13 @@ export default function PuntoDeVentaView({
             return;
           }
 
-          // Verificar si existe una apertura ACTIVA (estado='APERTURA') sin importar el día
-          // Si no hubo cierre, la apertura anterior sigue vigente aunque sea otro día
-          const { data: apertura, error: aperturasError } = await supabase
+          // Determinar estado real del turno por el ÚLTIMO movimiento en cierres
+          const { data: ultimoMovimiento, error: aperturasError } = await supabase
             .from("cierres")
             .select("id, estado, cajero_id, caja, fecha")
             .eq("cajero_id", usuarioActual.id)
             .eq("caja", cajaAsignada)
-            .eq("estado", "APERTURA")
-            .order("fecha", { ascending: false })
+            .order("id", { ascending: false })
             .limit(1)
             .maybeSingle();
 
@@ -2268,17 +2266,17 @@ export default function PuntoDeVentaView({
             throw new Error(aperturasError.message || "Error de conexión");
           }
 
-          if (apertura) {
-            console.log("✓ Apertura encontrada en Supabase:", apertura);
+          if (ultimoMovimiento?.estado === "APERTURA") {
+            console.log("✓ Apertura activa encontrada en Supabase:", ultimoMovimiento);
             setAperturaRegistrada(true);
 
             // Guardar en cache para uso offline
             await guardarAperturaCache({
-              id: apertura.id.toString(),
-              cajero_id: apertura.cajero_id,
-              caja: apertura.caja,
-              fecha: apertura.fecha,
-              estado: apertura.estado,
+              id: ultimoMovimiento.id.toString(),
+              cajero_id: ultimoMovimiento.cajero_id,
+              caja: ultimoMovimiento.caja,
+              fecha: ultimoMovimiento.fecha,
+              estado: ultimoMovimiento.estado,
             });
             console.log("✓ Apertura guardada en cache");
           } else {
@@ -3067,27 +3065,27 @@ export default function PuntoDeVentaView({
         return;
       }
 
-      // ── Capa 4 (extra): verificar en Supabase si ya hay apertura activa ──
-      const { data: aperturaExistente } = await supabase
+      // ── Capa 4 (extra): verificar en Supabase el último movimiento real ──
+      const { data: ultimoMovimiento } = await supabase
         .from("cierres")
         .select("id, cajero_id, caja, fecha, estado")
         .eq("cajero_id", usuarioActual.id)
         .eq("caja", cajaAsignada)
-        .eq("estado", "APERTURA")
+        .order("id", { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      if (aperturaExistente) {
+      if (ultimoMovimiento?.estado === "APERTURA") {
         console.log(
           "✓ Apertura activa encontrada en Supabase → no se crea duplicado",
         );
         // Sincronizar cache con la apertura que ya existe
         await guardarAperturaCache({
-          id: aperturaExistente.id.toString(),
-          cajero_id: aperturaExistente.cajero_id,
-          caja: aperturaExistente.caja,
-          fecha: aperturaExistente.fecha,
-          estado: aperturaExistente.estado,
+          id: ultimoMovimiento.id.toString(),
+          cajero_id: ultimoMovimiento.cajero_id,
+          caja: ultimoMovimiento.caja,
+          fecha: ultimoMovimiento.fecha,
+          estado: ultimoMovimiento.estado,
         });
         setAperturaRegistrada(true);
         setRegistrandoApertura(false);

@@ -4,8 +4,7 @@
  */
 
 import { supabase } from "../supabaseClient";
-import { upsertOne, getByIndex, getAll, deleteById, STORE } from "./localDB";
-import { compareTurnoRecordsByRecency } from "./fechas";
+import { upsertOne, getAll, deleteById, STORE } from "./localDB";
 
 // Nombre de la base de datos
 const DB_NAME = "PuntoVentaOfflineDB";
@@ -1842,42 +1841,23 @@ export async function guardarAperturaCache(
 
   // Guardar en STORE.CIERRES (fuente primaria de localDB) para que
   // fetchHistorialVentas, fetchResumenCaja y calcularResumenTurno lo encuentren.
-  // Solo pisar si: IDB está vacío, o el registro existente es más viejo que esta apertura.
   try {
-    const existentes = await getByIndex(
-      STORE.CIERRES,
-      "cajero_id",
-      apertura.cajero_id,
-    );
-    const masReciente = existentes.sort(compareTurnoRecordsByRecency)[0];
-
-    // Si el registro más reciente en IDB es un CIERRE y es más nuevo que esta apertura
-    // → esta apertura es un sync tardío de datos viejos, no pisar el cierre
-    const cierreEsMasReciente =
-      masReciente &&
-      masReciente.estado === "CIERRE" &&
-      compareTurnoRecordsByRecency(masReciente, apertura as Record<string, unknown>) <= 0;
-
-    if (cierreEsMasReciente) {
-      console.log(
-        "[guardarAperturaCache] CIERRE activo más reciente en IDB → apertura de Supabase no pisa",
-      );
-    } else {
-      const numId = parseInt(apertura.id as string);
-      const aperturaIDB: Record<string, unknown> = {
-        id: Number.isFinite(numId) && numId > 0 ? numId : -Date.now(),
-        cajero_id: apertura.cajero_id,
-        cajero: (apertura as any).cajero || "",
-        caja: apertura.caja,
-        fecha: apertura.fecha,
-        estado: "APERTURA",
-      };
-      if ((apertura as any).pending_sync !== undefined) {
-        aperturaIDB.pending_sync = (apertura as any).pending_sync;
-      }
-      await upsertOne(STORE.CIERRES, aperturaIDB);
-      console.log(`[guardarAperturaCache] Guardado en STORE.CIERRES id=${aperturaIDB.id} pending_sync=${aperturaIDB.pending_sync}`);
+    const numId = parseInt(apertura.id as string);
+    const aperturaIDB: Record<string, unknown> = {
+      id: Number.isFinite(numId) && numId > 0 ? numId : -Date.now(),
+      cajero_id: apertura.cajero_id,
+      cajero: (apertura as any).cajero || "",
+      caja: apertura.caja,
+      fecha: apertura.fecha,
+      estado: "APERTURA",
+    };
+    if ((apertura as any).pending_sync !== undefined) {
+      aperturaIDB.pending_sync = (apertura as any).pending_sync;
     }
+    await upsertOne(STORE.CIERRES, aperturaIDB);
+    console.log(
+      `[guardarAperturaCache] Guardado en STORE.CIERRES id=${aperturaIDB.id} pending_sync=${aperturaIDB.pending_sync}`,
+    );
   } catch (e) {
     console.warn(
       "[offlineSync] No se pudo guardar apertura en STORE.CIERRES:",
