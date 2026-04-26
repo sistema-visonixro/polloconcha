@@ -3,7 +3,11 @@ import { NOMBRE_NEGOCIO } from "./empresa";
 import PagoModal from "./PagoModal";
 import RegistroCierreView from "./RegistroCierreView";
 import { supabase } from "./supabaseClient";
-import { getLocalDayRange, formatToHondurasLocal } from "./utils/fechas";
+import {
+  getLocalDayRange,
+  formatToHondurasLocal,
+  compareTurnoRecordsByRecency,
+} from "./utils/fechas";
 import { useDatosNegocio } from "./useDatosNegocio";
 import {
   inicializarSistemaOffline,
@@ -2164,9 +2168,7 @@ export default function PuntoDeVentaView({
           if (idbCierres.length > 0) {
             // Ordenar por fecha descendente → el más reciente manda
             const masReciente = [...idbCierres].sort(
-              (a, b) =>
-                new Date(b.fecha ?? 0).getTime() -
-                new Date(a.fecha ?? 0).getTime(),
+              compareTurnoRecordsByRecency,
             )[0];
 
             if (masReciente.estado === "APERTURA") {

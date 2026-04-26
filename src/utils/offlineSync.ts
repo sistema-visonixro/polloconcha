@@ -5,6 +5,7 @@
 
 import { supabase } from "../supabaseClient";
 import { upsertOne, getByIndex, getAll, deleteById, STORE } from "./localDB";
+import { compareTurnoRecordsByRecency } from "./fechas";
 
 // Nombre de la base de datos
 const DB_NAME = "PuntoVentaOfflineDB";
@@ -1848,21 +1849,14 @@ export async function guardarAperturaCache(
       "cajero_id",
       apertura.cajero_id,
     );
-    const masReciente = existentes.sort(
-      (a: any, b: any) =>
-        new Date(b.fecha ?? 0).getTime() - new Date(a.fecha ?? 0).getTime(),
-    )[0];
+    const masReciente = existentes.sort(compareTurnoRecordsByRecency)[0];
 
     // Si el registro más reciente en IDB es un CIERRE y es más nuevo que esta apertura
     // → esta apertura es un sync tardío de datos viejos, no pisar el cierre
-    const tsApertura = new Date(apertura.fecha ?? 0).getTime();
-    const tsMasReciente = masReciente
-      ? new Date(masReciente.fecha ?? 0).getTime()
-      : 0;
     const cierreEsMasReciente =
       masReciente &&
       masReciente.estado === "CIERRE" &&
-      tsMasReciente >= tsApertura;
+      compareTurnoRecordsByRecency(masReciente, apertura as Record<string, unknown>) <= 0;
 
     if (cierreEsMasReciente) {
       console.log(
