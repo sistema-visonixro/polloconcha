@@ -2338,6 +2338,40 @@ export default function PuntoDeVentaView({
             // Capa IndexedDB (apertura_cache)
             const aperturaCache = await obtenerAperturaCache();
             if (aperturaCache) {
+              let cacheValido = true;
+              try {
+                const cierresIDB = await getByIndex<any>(
+                  STORE.CIERRES,
+                  "cajero_id",
+                  aperturaCache.cajero_id,
+                );
+                const masReciente = [...cierresIDB].sort(
+                  compareTurnoRecordsByRecency,
+                )[0];
+                const cacheEsViejoCerrado =
+                  masReciente &&
+                  masReciente.estado === "CIERRE" &&
+                  compareTurnoRecordsByRecency(
+                    masReciente,
+                    aperturaCache as any,
+                  ) <= 0;
+
+                if (cacheEsViejoCerrado) {
+                  cacheValido = false;
+                  console.warn(
+                    "⚠ apertura_cache quedó desfasada por cierre más reciente → limpiando",
+                  );
+                  await limpiarAperturaCache();
+                }
+              } catch {
+                /* ignore */
+              }
+
+              if (!cacheValido) {
+                setAperturaRegistrada(false);
+                return;
+              }
+
               console.log(
                 "✓ Apertura activa encontrada en IndexedDB:",
                 aperturaCache,
@@ -3003,12 +3037,42 @@ export default function PuntoDeVentaView({
       // ── Capa 2: verificar IndexedDB (offline) ──
       const aperturaCache = await obtenerAperturaCache();
       if (aperturaCache && aperturaCache.cajero_id === usuarioActual.id) {
-        console.log(
-          "✓ Apertura activa detectada en IndexedDB → no se crea duplicado",
-        );
-        setAperturaRegistrada(true);
-        setRegistrandoApertura(false);
-        return;
+        try {
+          const cierresIDB = await getByIndex<any>(
+            STORE.CIERRES,
+            "cajero_id",
+            usuarioActual.id,
+          );
+          const masReciente = [...cierresIDB].sort(
+            compareTurnoRecordsByRecency,
+          )[0];
+          const cacheEsViejoCerrado =
+            masReciente &&
+            masReciente.estado === "CIERRE" &&
+            compareTurnoRecordsByRecency(masReciente, aperturaCache as any) <=
+              0;
+
+          if (cacheEsViejoCerrado) {
+            console.log(
+              "⚠ Apertura cache antigua detectada tras cierre → limpiando cache y continuando apertura nueva",
+            );
+            await limpiarAperturaCache();
+          } else {
+            console.log(
+              "✓ Apertura activa detectada en IndexedDB → no se crea duplicado",
+            );
+            setAperturaRegistrada(true);
+            setRegistrandoApertura(false);
+            return;
+          }
+        } catch {
+          console.log(
+            "✓ Apertura activa detectada en IndexedDB → no se crea duplicado",
+          );
+          setAperturaRegistrada(true);
+          setRegistrandoApertura(false);
+          return;
+        }
       }
 
       // ── Capa 3: verificar en Supabase (con red) ──

@@ -10,7 +10,10 @@ import {
   STORE,
   getPrecioDolarLocal,
 } from "./utils/localDB";
-import { limpiarAperturaLocalStorage } from "./utils/offlineSync";
+import {
+  limpiarAperturaCache,
+  limpiarAperturaLocalStorage,
+} from "./utils/offlineSync";
 interface UsuarioActual {
   nombre: string;
   [key: string]: any;
@@ -424,6 +427,7 @@ export default function RegistroCierreView({
           });
           registroId = tempId;
         }
+        await limpiarAperturaCache();
         limpiarAperturaLocalStorage();
         idbOk = true;
       } catch (idbErr) {
