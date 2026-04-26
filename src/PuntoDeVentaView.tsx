@@ -4063,12 +4063,36 @@ export default function PuntoDeVentaView({
             }
           } else {
             // Sin conexión: usar contador local
-            facturaParaEstaVenta =
+            let facturaOffline: string | null =
               facturaActual &&
               Number.isFinite(parseInt(facturaActual)) &&
               facturaActual !== "Límite alcanzado"
                 ? facturaActual
-                : `OFFLINE-${Date.now()}`;
+                : null;
+
+            if (!facturaOffline && usuarioActual?.id) {
+              try {
+                const caiRows = await getAll<any>(STORE.CAI_FACTURAS);
+                const caiRecibo = caiRows.find(
+                  (r) =>
+                    r.cajero_id === usuarioActual.id &&
+                    r.tipo_comprobante === TIPO_RECIBO &&
+                    r.activo !== false,
+                );
+                if (caiRecibo) {
+                  const base = parseInt(
+                    caiRecibo.factura_actual || caiRecibo.rango_desde || "0",
+                  );
+                  if (Number.isFinite(base) && base > 0) {
+                    facturaOffline = String(base);
+                  }
+                }
+              } catch {
+                /* non-critical */
+              }
+            }
+
+            facturaParaEstaVenta = facturaOffline ?? `OFFLINE-${Date.now()}`;
           }
 
           // ── BIFURCACIÓN DELIVERY: si hay pedido pendiente de entrega, procesarlo y retornar ──
@@ -4286,11 +4310,27 @@ export default function PuntoDeVentaView({
 
               // PASO 5: Incrementar factura (solo para RECIBO; FACTURA usa RPC atómico)
               if (tipoDocumentoFiscal !== "FACTURA") {
-                setFacturaActual((prev) => {
-                  if (!prev || prev === "Límite alcanzado") return prev;
-                  const n = parseInt(prev);
-                  return Number.isFinite(n) ? (n + 1).toString() : prev;
-                });
+                const numUsado = parseInt(facturaParaEstaVenta);
+                if (Number.isFinite(numUsado)) {
+                  const siguienteDisplay = (numUsado + 1).toString();
+                  try {
+                    await persistirReciboActual(siguienteDisplay, {
+                      actualizarSupabase: isOnline && Boolean(usuarioActual?.id),
+                    });
+                  } catch (err) {
+                    console.error(
+                      "Error actualizando correlativo RECIBO tras delivery:",
+                      err,
+                    );
+                    setFacturaActual(siguienteDisplay);
+                  }
+                } else {
+                  setFacturaActual((prev) => {
+                    if (!prev || prev === "Límite alcanzado") return prev;
+                    const n = parseInt(prev);
+                    return Number.isFinite(n) ? (n + 1).toString() : prev;
+                  });
+                }
               }
 
               // PASO 6: Actualizar lista de pedidos

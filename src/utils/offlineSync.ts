@@ -2090,10 +2090,12 @@ export async function guardarVentaLocal(
   // Guardar también en STORE.VENTAS (fuente primaria para resumen e historial offline)
   try {
     const tempId =
-      typeof (venta as any).id === "number" ? (venta as any).id : -Date.now();
+      typeof (venta as any).id === "number"
+        ? (venta as any).id
+        : -Math.abs(localId);
     await upsertOne(STORE.VENTAS, { ...venta, id: tempId });
   } catch (e) {
-    console.warn("[offlineSync] No se pudo guardar venta en STORE.VENTAS:", e);
+    console.error("[offlineSync] No se pudo guardar venta en STORE.VENTAS:", e);
   }
 
   return localId;
