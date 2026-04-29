@@ -74,7 +74,8 @@ interface Producto {
   nombre: string;
   precio: number;
   tipo: "comida" | "bebida" | "complemento";
-  tipo_impuesto?: string;
+  tipo_impuesto?: string | number;
+  tasa_impuesto?: number;
   imagen?: string;
   subcategoria?: string;
 }
@@ -85,8 +86,47 @@ interface Seleccion {
   precio: number;
   cantidad: number;
   tipo: "comida" | "bebida" | "complemento";
+  tipo_impuesto?: string | number;
+  tasa_impuesto?: number;
   complementos?: string[]; // Array de selecciones: "CON TODO", "SIN SALSAS", etc.
   piezas?: string; // "PIEZAS VARIAS", "PECHUGA", "ALA, CADERA", etc.
+}
+
+function obtenerTasaImpuesto(
+  tipoImpuesto?: string | number | null,
+  tipoProducto?: string,
+): number {
+  if (typeof tipoImpuesto === "number" && Number.isFinite(tipoImpuesto)) {
+    if (tipoImpuesto >= 1) return tipoImpuesto / 100;
+    return tipoImpuesto;
+  }
+
+  const raw = String(tipoImpuesto ?? "")
+    .trim()
+    .toLowerCase();
+
+  if (
+    raw === "isv" ||
+    raw === "venta" ||
+    raw === "15" ||
+    raw === "15%" ||
+    raw === "0.15"
+  ) {
+    return 0.15;
+  }
+  if (raw === "alcohol" || raw === "18" || raw === "18%" || raw === "0.18") {
+    return 0.18;
+  }
+
+  const asNum = Number(raw.replace("%", ""));
+  if (Number.isFinite(asNum)) {
+    if (asNum >= 1) return asNum / 100;
+    return asNum;
+  }
+
+  if (tipoProducto === "comida") return 0.15;
+  if (tipoProducto === "bebida") return 0.18;
+  return 0;
 }
 
 // use centralized supabase client from src/supabaseClient.ts
@@ -202,6 +242,8 @@ export default function PuntoDeVentaView({
       precio: p.precio,
       cantidad: p.cantidad,
       tipo: p.tipo,
+      tipo_impuesto: String(obtenerTasaImpuesto(p.tipo_impuesto, p.tipo)),
+      tasa_impuesto: obtenerTasaImpuesto(p.tipo_impuesto, p.tipo),
     }));
 
     try {
@@ -2675,6 +2717,7 @@ export default function PuntoDeVentaView({
   const agregarProducto = (producto: Producto) => {
     setSeleccionados((prev) => {
       const existe = prev.find((p) => p.id === producto.id);
+      const tasa = obtenerTasaImpuesto(producto.tipo_impuesto, producto.tipo);
       let nuevos;
       if (existe) {
         nuevos = prev.map((p) =>
@@ -2687,6 +2730,8 @@ export default function PuntoDeVentaView({
             ...producto,
             cantidad: 1,
             tipo: producto.tipo,
+            tipo_impuesto: String(tasa),
+            tasa_impuesto: tasa,
             complementos: [],
             piezas: "PIEZAS VARIAS",
           },
@@ -3126,7 +3171,8 @@ export default function PuntoDeVentaView({
           )[0];
           const cacheEsViejoCerrado =
             masReciente &&
-            (masReciente.tipo_registro === "cierre" || masReciente.estado === "CIERRE") &&
+            (masReciente.tipo_registro === "cierre" ||
+              masReciente.estado === "CIERRE") &&
             compareTurnoRecordsByRecency(masReciente, aperturaCache as any) <=
               0;
 
@@ -3217,7 +3263,10 @@ export default function PuntoDeVentaView({
         .limit(1)
         .maybeSingle();
 
-      if (ultimoMovimiento?.tipo_registro === "apertura" || ultimoMovimiento?.estado === "APERTURA") {
+      if (
+        ultimoMovimiento?.tipo_registro === "apertura" ||
+        ultimoMovimiento?.estado === "APERTURA"
+      ) {
         console.log(
           "✓ Apertura activa encontrada en Supabase → no se crea duplicado",
         );
@@ -4411,31 +4460,32 @@ export default function PuntoDeVentaView({
                 precio: pp.precio,
                 cantidad: pp.cantidad,
                 tipo: pp.tipo || "comida",
+                tipo_impuesto: pp.tipo_impuesto ?? pp.tasa_impuesto,
               }));
-              const pdSubTotal = pdProductos.reduce(
-                (sum: number, item: any) => {
-                  if (item.tipo === "comida")
-                    return sum + (item.precio / 1.15) * item.cantidad;
-                  if (item.tipo === "bebida")
-                    return sum + (item.precio / 1.18) * item.cantidad;
-                  return sum + item.precio * item.cantidad;
+              const pdResumenImpuesto = pdProductos.reduce(
+                (acc: any, item: any) => {
+                  const tasa = obtenerTasaImpuesto(
+                    item.tipo_impuesto,
+                    item.tipo,
+                  );
+                  const totalLinea =
+                    Number(item.precio || 0) * Number(item.cantidad || 0);
+                  if (tasa > 0) {
+                    const base = totalLinea / (1 + tasa);
+                    const imp = totalLinea - base;
+                    acc.subTotal += base;
+                    if (Math.abs(tasa - 0.18) < 0.0001) acc.isv18 += imp;
+                    else acc.isv15 += imp;
+                  } else {
+                    acc.subTotal += totalLinea;
+                  }
+                  return acc;
                 },
-                0,
+                { subTotal: 0, isv15: 0, isv18: 0 },
               );
-              const pdIsv15 = pdProductos
-                .filter((it: any) => it.tipo === "comida")
-                .reduce(
-                  (s: number, it: any) =>
-                    s + (it.precio - it.precio / 1.15) * it.cantidad,
-                  0,
-                );
-              const pdIsv18 = pdProductos
-                .filter((it: any) => it.tipo === "bebida")
-                .reduce(
-                  (s: number, it: any) =>
-                    s + (it.precio - it.precio / 1.18) * it.cantidad,
-                  0,
-                );
+              const pdSubTotal = pdResumenImpuesto.subTotal;
+              const pdIsv15 = pdResumenImpuesto.isv15;
+              const pdIsv18 = pdResumenImpuesto.isv18;
               const pdCostoEnvio = parseFloat(pd.costo_envio || "0");
               const pdMontoProductos = Number(pd.total || 0);
 
@@ -4500,6 +4550,13 @@ export default function PuntoDeVentaView({
                     precio: pp.precio,
                     cantidad: pp.cantidad,
                     tipo: pp.tipo || "comida",
+                    tipo_impuesto: String(
+                      obtenerTasaImpuesto(pp.tipo_impuesto, pp.tipo),
+                    ),
+                    tasa_impuesto: obtenerTasaImpuesto(
+                      pp.tipo_impuesto,
+                      pp.tipo,
+                    ),
                     complementos: pp.complementos ?? [],
                     piezas: pp.piezas ?? null,
                   })),
@@ -5100,27 +5157,32 @@ export default function PuntoDeVentaView({
             }
 
             // ── Pre-cálculo ISV para recibo fiscal SAR ────────────────────────
-            const _base15Fact = snap.seleccionados
-              .filter((p) => p.tipo === "comida")
-              .reduce((s, p) => s + (p.precio / 1.15) * p.cantidad, 0);
-            const _isv15Fact = snap.seleccionados
-              .filter((p) => p.tipo === "comida")
-              .reduce(
-                (s, p) => s + (p.precio - p.precio / 1.15) * p.cantidad,
-                0,
-              );
-            const _base18Fact = snap.seleccionados
-              .filter((p) => p.tipo === "bebida")
-              .reduce((s, p) => s + (p.precio / 1.18) * p.cantidad, 0);
-            const _isv18Fact = snap.seleccionados
-              .filter((p) => p.tipo === "bebida")
-              .reduce(
-                (s, p) => s + (p.precio - p.precio / 1.18) * p.cantidad,
-                0,
-              );
-            const _baseExentaFact = snap.seleccionados
-              .filter((p) => p.tipo !== "comida" && p.tipo !== "bebida")
-              .reduce((s, p) => s + p.precio * p.cantidad, 0);
+            const _resumenImpuestoFact = snap.seleccionados.reduce(
+              (acc, p) => {
+                const tasa = obtenerTasaImpuesto(p.tipo_impuesto, p.tipo);
+                const totalLinea = p.precio * p.cantidad;
+                if (tasa > 0) {
+                  const base = totalLinea / (1 + tasa);
+                  const imp = totalLinea - base;
+                  if (Math.abs(tasa - 0.18) < 0.0001) {
+                    acc.base18 += base;
+                    acc.isv18 += imp;
+                  } else {
+                    acc.base15 += base;
+                    acc.isv15 += imp;
+                  }
+                } else {
+                  acc.baseExenta += totalLinea;
+                }
+                return acc;
+              },
+              { base15: 0, isv15: 0, base18: 0, isv18: 0, baseExenta: 0 },
+            );
+            const _base15Fact = _resumenImpuestoFact.base15;
+            const _isv15Fact = _resumenImpuestoFact.isv15;
+            const _base18Fact = _resumenImpuestoFact.base18;
+            const _isv18Fact = _resumenImpuestoFact.isv18;
+            const _baseExentaFact = _resumenImpuestoFact.baseExenta;
             void _baseExentaFact; // reservado para uso futuro
 
             const comprobanteHtml = `
@@ -5412,27 +5474,26 @@ export default function PuntoDeVentaView({
             // Guardar venta en la tabla 'ventas' (factura + pago fusionados)
             // Primero en Supabase; si falla → IndexedDB para sincronización posterior
             try {
-              const subTotal = snap.seleccionados.reduce((sum, p) => {
-                if (p.tipo === "comida") {
-                  return sum + (p.precio / 1.15) * p.cantidad;
-                } else if (p.tipo === "bebida") {
-                  return sum + (p.precio / 1.18) * p.cantidad;
-                } else {
-                  return sum + p.precio * p.cantidad;
-                }
-              }, 0);
-              const isv15 = snap.seleccionados
-                .filter((p) => p.tipo === "comida")
-                .reduce(
-                  (sum, p) => sum + (p.precio - p.precio / 1.15) * p.cantidad,
-                  0,
-                );
-              const isv18 = snap.seleccionados
-                .filter((p) => p.tipo === "bebida")
-                .reduce(
-                  (sum, p) => sum + (p.precio - p.precio / 1.18) * p.cantidad,
-                  0,
-                );
+              const resumenImpuesto = snap.seleccionados.reduce(
+                (acc, p) => {
+                  const tasa = obtenerTasaImpuesto(p.tipo_impuesto, p.tipo);
+                  const totalLinea = p.precio * p.cantidad;
+                  if (tasa > 0) {
+                    const base = totalLinea / (1 + tasa);
+                    const imp = totalLinea - base;
+                    acc.subTotal += base;
+                    if (Math.abs(tasa - 0.18) < 0.0001) acc.isv18 += imp;
+                    else acc.isv15 += imp;
+                  } else {
+                    acc.subTotal += totalLinea;
+                  }
+                  return acc;
+                },
+                { subTotal: 0, isv15: 0, isv18: 0 },
+              );
+              const subTotal = resumenImpuesto.subTotal;
+              const isv15 = resumenImpuesto.isv15;
+              const isv18 = resumenImpuesto.isv18;
               if (snap.facturaActual === "Límite alcanzado") {
                 alert(
                   "¡Se ha alcanzado el límite de facturas para este cajero!",
@@ -5461,6 +5522,10 @@ export default function PuntoDeVentaView({
                     precio: p.precio,
                     cantidad: p.cantidad,
                     tipo: p.tipo,
+                    tipo_impuesto: String(
+                      obtenerTasaImpuesto(p.tipo_impuesto, p.tipo),
+                    ),
+                    tasa_impuesto: obtenerTasaImpuesto(p.tipo_impuesto, p.tipo),
                     complementos: p.complementos ?? [],
                     piezas: p.piezas ?? null,
                   })),

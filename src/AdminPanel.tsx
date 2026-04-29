@@ -773,39 +773,97 @@ const AdminPanel: FC<AdminPanelProps> = (props) => {
       }
 
       .main-content {
-        max-width: 1400px;
+        max-width: 1460px;
         margin: 0 auto;
       }
       
       .welcome-section {
-        text-align: center;
-        margin-bottom: 3rem;
-        margin-top: 1rem;
+        margin-bottom: 1.2rem;
+        margin-top: 0.2rem;
+        border-radius: 14px;
+        overflow: hidden;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
       }
       .welcome-title {
-        font-size: clamp(1.8rem, 4vw, 3rem);
-        font-weight: 800;
-        background: linear-gradient(135deg, #1e293b 0%, #3b82f6 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin: 0 0 1rem 0;
+        font-size: clamp(1.45rem, 3vw, 2.1rem);
+        font-weight: 900;
+        color: #fff;
+        margin: 0;
+        letter-spacing: 0.7px;
+      }
+      .welcome-hero {
+        background: linear-gradient(135deg, #0b4f9a 0%, #1976d2 100%);
+        color: #fff;
+        padding: 1.4rem 1.5rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .welcome-subtitle {
+        color: rgba(255,255,255,0.92);
+        margin: 6px 0 0 0;
+        font-size: 0.86rem;
+        font-weight: 600;
+      }
+      .welcome-pill {
+        background: rgba(255,255,255,0.2);
+        border: 1px solid rgba(255,255,255,0.35);
+        color: #fff;
+        padding: 8px 12px;
+        border-radius: 20px;
+        font-size: 0.76rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .welcome-pill.secondary {
+        background: rgba(255,255,255,0.12);
+      }
+      .welcome-stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+        background: #fff;
+        border-top: 1px solid #dbe2ea;
+      }
+      .welcome-stat {
+        padding: 12px 14px;
+        text-align: center;
+        border-right: 1px solid #e2e8f0;
+      }
+      .welcome-stat:last-child {
+        border-right: none;
+      }
+      .welcome-stat-label {
+        font-size: 0.68rem;
+        color: #64748b;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .welcome-stat-value {
+        font-size: 1.2rem;
+        color: #0f172a;
+        font-weight: 900;
+        margin-top: 3px;
       }
 
       .cards-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-        gap: 2rem;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: 1rem;
       }
       .card {
         background: white;
         border: 1px solid #e2e8f0;
-        border-radius: 20px;
-        padding: 2rem;
+        border-radius: 14px;
+        padding: 1.1rem 1.15rem;
         cursor: pointer;
         transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         position: relative;
         overflow: hidden;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        box-shadow: 0 2px 10px rgba(0,0,0,0.06);
       }
       .card::before {
         content: '';
@@ -816,49 +874,49 @@ const AdminPanel: FC<AdminPanelProps> = (props) => {
         border-radius: 20px 20px 0 0;
       }
       .card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 12px 30px rgba(0,0,0,0.08);
+        transform: translateY(-3px);
+        box-shadow: 0 10px 24px rgba(0,0,0,0.11);
       }
       .card-header {
         display: flex;
         align-items: center;
-        gap: 16px;
-        margin-bottom: 1.5rem;
+        gap: 12px;
+        margin-bottom: 0.9rem;
       }
       .card-icon {
-        width: 56px;
-        height: 56px;
-        border-radius: 14px;
+        width: 46px;
+        height: 46px;
+        border-radius: 12px;
         display: flex;
         align-items: center;
         justify-content: center;
-        font-size: 1.8rem;
+        font-size: 1.45rem;
         background: linear-gradient(135deg, var(--card-color), var(--card-color)cc);
         color: white;
         flex-shrink: 0;
-        box-shadow: 0 8px 20px rgba(0,0,0,0.15);
+        box-shadow: 0 6px 14px rgba(0,0,0,0.14);
       }
       .card-content h3 {
         margin: 0 0 0.5rem 0;
-        font-size: 1.15rem;
-        font-weight: 700;
+        font-size: 1rem;
+        font-weight: 800;
         color: #0f172a;
       }
       .card-subtitle {
         margin: 0;
-        font-size: 0.85rem;
+        font-size: 0.78rem;
         color: #64748b;
-        font-weight: 500;
+        font-weight: 600;
       }
       .card-footer {
-        padding-top: 1rem;
+        padding-top: 0.65rem;
         border-top: 1px solid #f1f5f9;
         display: flex;
         justify-content: flex-end;
       }
       .card-arrow {
-        color: #cbd5e1;
-        font-size: 1.25rem;
+        color: #94a3b8;
+        font-size: 1.05rem;
         font-weight: 700;
       }
 
@@ -1102,10 +1160,42 @@ const AdminPanel: FC<AdminPanelProps> = (props) => {
             {currentView === "menu" && (
               <main className="main-content">
                 <div className="welcome-section">
-                  <h1 className="welcome-title">Panel de Control</h1>
-                  <p style={{ color: "#64748b", margin: 0 }}>
-                    Bienvenido, selecciona una opción para comenzar.
-                  </p>
+                  <div className="welcome-hero">
+                    <div>
+                      <h1 className="welcome-title">Panel de Control</h1>
+                      <p className="welcome-subtitle">
+                        Bienvenido, selecciona una opción para comenzar.
+                      </p>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <div className="welcome-pill">Panel Ejecutivo</div>
+                      <div className="welcome-pill secondary">Administrador</div>
+                    </div>
+                  </div>
+                  <div className="welcome-stats">
+                    <div className="welcome-stat">
+                      <div className="welcome-stat-label">Módulos</div>
+                      <div className="welcome-stat-value">{cards.length}</div>
+                    </div>
+                    <div className="welcome-stat">
+                      <div className="welcome-stat-label">Usuario</div>
+                      <div
+                        className="welcome-stat-value"
+                        style={{ fontSize: "0.95rem" }}
+                      >
+                        {user?.nombre || "Admin"}
+                      </div>
+                    </div>
+                    <div className="welcome-stat">
+                      <div className="welcome-stat-label">Negocio</div>
+                      <div
+                        className="welcome-stat-value"
+                        style={{ fontSize: "0.95rem" }}
+                      >
+                        {datosNegocio.nombre_negocio || "Principal"}
+                      </div>
+                    </div>
+                  </div>
                 </div>
                 <div className="cards-grid">
                   {cards.map((card) => (

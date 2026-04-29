@@ -31,7 +31,7 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
   const [error, setError] = useState("");
   const [form, setForm] = useState<Partial<Producto>>({
     tipo: "comida",
-    tipo_impuesto: "venta",
+    tipo_impuesto: "0.15",
   });
   const [editId, setEditId] = useState<string | null>(null);
   const [imagenFile, setImagenFile] = useState<File | null>(null);
@@ -55,9 +55,43 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
 
   // Calculate tax and subtotal
   const calcularImpuesto = (precio: number, tipo_impuesto: string) => {
-    if (tipo_impuesto === "venta") return precio * 0.15;
-    if (tipo_impuesto === "alcohol") return precio * 0.18;
-    return 0;
+    const raw = String(tipo_impuesto || "")
+      .trim()
+      .toLowerCase();
+    if (raw === "venta" || raw === "isv" || raw === "15" || raw === "15%") {
+      return precio * 0.15;
+    }
+    if (raw === "alcohol" || raw === "18" || raw === "18%") {
+      return precio * 0.18;
+    }
+    const n = Number(raw.replace("%", ""));
+    if (Number.isFinite(n)) {
+      if (n >= 1) return precio * (n / 100);
+      return precio * n;
+    }
+    return precio * 0.15;
+  };
+
+  const obtenerEtiquetaImpuesto = (tipoImpuesto: string | undefined) => {
+    const tipo = String(tipoImpuesto || "")
+      .trim()
+      .toLowerCase();
+    if (
+      tipo === "venta" ||
+      tipo === "isv" ||
+      tipo === "15" ||
+      tipo === "15%" ||
+      tipo === "0.15"
+    )
+      return "15%";
+    if (
+      tipo === "alcohol" ||
+      tipo === "18" ||
+      tipo === "18%" ||
+      tipo === "0.18"
+    )
+      return "18%";
+    return "15%";
   };
 
   // Handle form submission (create or edit product)
@@ -68,7 +102,8 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
 
     let imagenUrl = form.imagen || "";
     const precio = form.precio || 0;
-    const tipo_impuesto = form.tipo_impuesto || "venta";
+    const tipo_impuesto =
+      String(form.tipo_impuesto || "").trim() === "0.18" ? "0.18" : "0.15";
     const impuesto = calcularImpuesto(precio, tipo_impuesto);
     const sub_total = precio + impuesto;
 
@@ -128,7 +163,7 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
 
       console.log("Producto guardado:", result);
       setShowModal(false);
-      setForm({ tipo: "comida", tipo_impuesto: "venta" });
+      setForm({ tipo: "comida", tipo_impuesto: "0.15" });
       setImagenFile(null);
 
       // Refresh products
@@ -167,7 +202,7 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
   // Prepare for new product
   const handleNew = () => {
     setEditId(null);
-    setForm({ tipo: "comida", tipo_impuesto: "venta" });
+    setForm({ tipo: "comida", tipo_impuesto: "0.15" });
     setImagenFile(null);
     setShowModal(true);
   };
@@ -290,7 +325,7 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
                 <td style={{ padding: 12 }}>L {p.precio.toFixed(2)}</td>
                 <td style={{ padding: 12 }}>{p.tipo}</td>
                 <td style={{ padding: 12 }}>
-                  {p.tipo_impuesto === "venta" ? "15%" : "18%"}
+                  {obtenerEtiquetaImpuesto(p.tipo_impuesto)}
                 </td>
                 <td style={{ padding: 12 }}>L {p.sub_total.toFixed(2)}</td>
                 <td style={{ padding: 12 }}>
@@ -421,21 +456,62 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
                 <option value="comida">Comida</option>
                 <option value="bebida">Bebida</option>
               </select>
-              <select
-                value={form.tipo_impuesto || "venta"}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, tipo_impuesto: e.target.value }))
-                }
+              <div
                 style={{
-                  padding: "10px",
-                  borderRadius: 8,
-                  border: "1px solid #ccc",
-                  fontSize: 16,
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 8,
                 }}
               >
-                <option value="venta">Venta (15%)</option>
-                <option value="alcohol">Alcohol (18%)</option>
-              </select>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setForm((f) => ({ ...f, tipo_impuesto: "0.15" }))
+                  }
+                  style={{
+                    padding: "10px",
+                    borderRadius: 8,
+                    border:
+                      (form.tipo_impuesto || "0.15") === "0.15"
+                        ? "2px solid #1976d2"
+                        : "1px solid #ccc",
+                    background:
+                      (form.tipo_impuesto || "0.15") === "0.15"
+                        ? "#e3f2fd"
+                        : "#fff",
+                    color: "#0f172a",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    fontSize: 15,
+                  }}
+                >
+                  15%
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setForm((f) => ({ ...f, tipo_impuesto: "0.18" }))
+                  }
+                  style={{
+                    padding: "10px",
+                    borderRadius: 8,
+                    border:
+                      (form.tipo_impuesto || "0.15") === "0.18"
+                        ? "2px solid #1976d2"
+                        : "1px solid #ccc",
+                    background:
+                      (form.tipo_impuesto || "0.15") === "0.18"
+                        ? "#e3f2fd"
+                        : "#fff",
+                    color: "#0f172a",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    fontSize: 15,
+                  }}
+                >
+                  18%
+                </button>
+              </div>
               <input
                 type="file"
                 accept="image/*"

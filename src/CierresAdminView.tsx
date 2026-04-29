@@ -304,14 +304,14 @@ export default function CierresAdminView({
 
         .cierres-enterprise {
           min-height: 100vh;
-          background: linear-gradient(135deg, #f8fafc 0%, #e0e7ff 100%);
+          background: #f0f4f8;
           font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-          padding: 2rem;
+          padding: 1.25rem;
           color: var(--text-primary);
         }
 
         .container {
-          max-width: 1400px;
+          max-width: 1460px;
           margin: 0 auto;
           color: var(--text-primary);
         }
@@ -509,9 +509,9 @@ export default function CierresAdminView({
         .title {
           color: var(--text-primary);
           font-weight: 700;
-          font-size: 1.75rem;
-          margin-bottom: 2rem;
-          text-align: center;
+          font-size: 1.05rem;
+          margin: 0;
+          letter-spacing: 0.4px;
         }
 
         .table-container {
@@ -594,8 +594,8 @@ export default function CierresAdminView({
         }
 
         .modal {
-          background: rgba(26, 26, 46, 0.95);
-          backdrop-filter: blur(20px);
+          background: #ffffff;
+          backdrop-filter: blur(8px);
           border: 1px solid var(--border);
           border-radius: 16px;
           padding: 2rem;
@@ -603,13 +603,14 @@ export default function CierresAdminView({
           max-width: 90vw;
           max-height: 90vh;
           overflow-y: auto;
-          color: #fff;
+          color: #0f172a;
+          box-shadow: 0 24px 48px rgba(15, 23, 42, 0.2);
         }
 
         .modal-title {
-          color: #fff;
+          color: #0f172a;
           font-size: 1.25rem;
-          font-weight: 600;
+          font-weight: 800;
           margin-bottom: 1rem;
         }
 
@@ -805,124 +806,480 @@ export default function CierresAdminView({
       `}</style>
 
       <div className="container">
-        <header className="header">
-          <div className="header-left">
+        <div
+          style={{
+            marginBottom: "20px",
+            borderRadius: "14px",
+            overflow: "hidden",
+            boxShadow: "0 4px 20px rgba(0, 0, 0, 0.08)",
+          }}
+        >
+          <div
+            style={{
+              background: "linear-gradient(135deg, #0b4f9a 0%, #1976d2 100%)",
+              color: "#fff",
+              padding: "24px 28px",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 12,
+              flexWrap: "wrap",
+            }}
+          >
+            <div>
+              <h1
+                style={{
+                  margin: "0 0 8px 0",
+                  fontSize: "26px",
+                  fontWeight: 900,
+                  letterSpacing: 0.8,
+                }}
+              >
+                🔒 Cierres Administrativos
+              </h1>
+              <p style={{ margin: 0, fontSize: "12px", opacity: 0.92 }}>
+                Control de aperturas, cierres y diferencias por turno
+              </p>
+            </div>
             <button
-              className="btn-back"
               onClick={onVolver ? onVolver : () => window.history.back()}
+              style={{
+                background: "rgba(255,255,255,0.18)",
+                color: "#fff",
+                border: "1px solid rgba(255,255,255,0.35)",
+                borderRadius: "8px",
+                padding: "10px 16px",
+                fontWeight: 700,
+                cursor: "pointer",
+                backdropFilter: "blur(2px)",
+              }}
             >
               ← Volver
             </button>
-            <h1 className="page-title">🔒 Cierres Administrativos</h1>
           </div>
-          <div className="header-controls">
-            <label style={{ fontSize: 12, color: "#64748b" }}>Desde</label>
-            <input
-              type="date"
-              value={fechaDesde}
-              onChange={(e) => setFechaDesde(e.target.value)}
-              className="date-input"
-            />
-            <label style={{ fontSize: 12, color: "#64748b" }}>Hasta</label>
-            <input
-              type="date"
-              value={fechaHasta}
-              onChange={(e) => setFechaHasta(e.target.value)}
-              className="date-input"
-            />
+
+          <div
+            style={{
+              background: "#fff",
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+              borderTop: "1px solid #dbe2ea",
+            }}
+          >
+            <div
+              style={{
+                padding: "14px 16px",
+                borderRight: "1px solid #e2e8f0",
+                textAlign: "center",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "11px",
+                  fontWeight: 700,
+                  color: "#64748b",
+                  textTransform: "uppercase",
+                }}
+              >
+                Cajas Abiertas
+              </div>
+              <div
+                style={{ fontSize: "24px", fontWeight: 900, color: "#16a34a" }}
+              >
+                {cajasAbiertas}
+              </div>
+            </div>
+            <div
+              style={{
+                padding: "14px 16px",
+                borderRight: "1px solid #e2e8f0",
+                textAlign: "center",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "11px",
+                  fontWeight: 700,
+                  color: "#64748b",
+                  textTransform: "uppercase",
+                }}
+              >
+                Cierres Filtrados
+              </div>
+              <div
+                style={{ fontSize: "24px", fontWeight: 900, color: "#1d4ed8" }}
+              >
+                {cierresFiltrados.length}
+              </div>
+            </div>
+            <div
+              style={{
+                padding: "14px 16px",
+                borderRight: "1px solid #e2e8f0",
+                textAlign: "center",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "11px",
+                  fontWeight: 700,
+                  color: "#64748b",
+                  textTransform: "uppercase",
+                }}
+              >
+                Dif. Sin Aclarar
+              </div>
+              <div
+                style={{
+                  fontSize: "24px",
+                  fontWeight: 900,
+                  color: sumaDiferencia >= 0 ? "#dc2626" : "#16a34a",
+                }}
+              >
+                L{" "}
+                {sumaDiferencia.toLocaleString("de-DE", {
+                  minimumFractionDigits: 2,
+                })}
+              </div>
+            </div>
+            <div style={{ padding: "14px 16px", textAlign: "center" }}>
+              <div
+                style={{
+                  fontSize: "11px",
+                  fontWeight: 700,
+                  color: "#64748b",
+                  textTransform: "uppercase",
+                }}
+              >
+                Rango
+              </div>
+              <div
+                style={{ fontSize: "13px", fontWeight: 700, color: "#0f172a" }}
+              >
+                {fechaDesde || "—"} {fechaHasta ? `→ ${fechaHasta}` : ""}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div
+          style={{
+            marginBottom: "20px",
+            background: "#fff",
+            border: "1px solid #e2e8f0",
+            borderRadius: "10px",
+            padding: "16px",
+            boxShadow: "0 2px 8px rgba(0, 0, 0, 0.04)",
+          }}
+        >
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+              gap: 10,
+              alignItems: "end",
+            }}
+          >
+            <div>
+              <label
+                style={{
+                  display: "block",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  color: "#64748b",
+                  marginBottom: 6,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.5,
+                }}
+              >
+                📅 Desde
+              </label>
+              <input
+                type="date"
+                value={fechaDesde}
+                onChange={(e) => setFechaDesde(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  borderRadius: 6,
+                  border: "1px solid #cbd5e1",
+                  fontSize: 13,
+                  color: "#0f172a",
+                  fontFamily: "inherit",
+                }}
+              />
+            </div>
+            <div>
+              <label
+                style={{
+                  display: "block",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  color: "#64748b",
+                  marginBottom: 6,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.5,
+                }}
+              >
+                📋 Hasta
+              </label>
+              <input
+                type="date"
+                value={fechaHasta}
+                onChange={(e) => setFechaHasta(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  borderRadius: 6,
+                  border: "1px solid #cbd5e1",
+                  fontSize: 13,
+                  color: "#0f172a",
+                  fontFamily: "inherit",
+                }}
+              />
+            </div>
             <button
-              className="btn-secondary"
               onClick={() => {
                 setFechaDesde("");
                 setFechaHasta("");
               }}
+              style={{
+                padding: "10px 16px",
+                background: "#e2e8f0",
+                color: "#334155",
+                border: "none",
+                borderRadius: 6,
+                fontWeight: 700,
+                fontSize: 13,
+                cursor: "pointer",
+              }}
             >
-              Todos
+              ♻️ Todos
+            </button>
+            <button
+              onClick={() => setFiltroId(null)}
+              style={{
+                padding: "10px 16px",
+                background: "#dbeafe",
+                color: "#1d4ed8",
+                border: "none",
+                borderRadius: 6,
+                fontWeight: 700,
+                fontSize: 13,
+                cursor: "pointer",
+              }}
+              disabled={filtroId === null}
+            >
+              🔎 Quitar filtro caja
             </button>
           </div>
-        </header>
+        </div>
 
-        <div className="stats-grid">
-          <div className="stat-card open-card">
-            <div className="stat-icon">🟢</div>
-            <div className="stat-title">Cajas abiertas</div>
-            <div className="stat-value">{cajasAbiertas}</div>
-            {cajasAbiertasList.length > 0 && (
-              <div className="open-list">
-                {cajasAbiertasList.map((ap, idx) => (
-                  <div key={idx} className="open-item">
-                    <span>
-                      <strong>Caja:</strong> {ap.caja} |{" "}
-                      <strong>Cajero:</strong> {ap.cajero}
-                    </span>
-                    <div>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))",
+            gap: "16px",
+            marginBottom: "20px",
+          }}
+        >
+          <div
+            style={{
+              background: "#fff",
+              border: "1px solid #e2e8f0",
+              borderRadius: 12,
+              boxShadow: "0 2px 10px rgba(0,0,0,0.06)",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                background: "linear-gradient(135deg, #22c55e 0%, #16a34a 100%)",
+                color: "#fff",
+                padding: "14px 16px",
+                fontWeight: 800,
+                fontSize: 14,
+              }}
+            >
+              🟢 Cajas Abiertas
+            </div>
+            <div style={{ padding: 14, maxHeight: 280, overflowY: "auto" }}>
+              {cajasAbiertasList.length === 0 ? (
+                <div style={{ color: "#64748b", fontSize: 13 }}>
+                  No hay cajas abiertas.
+                </div>
+              ) : (
+                cajasAbiertasList.map((ap, idx) => (
+                  <div
+                    key={idx}
+                    style={{
+                      border: "1px solid #dcfce7",
+                      background: "#f0fdf4",
+                      borderRadius: 10,
+                      padding: "10px 12px",
+                      marginBottom: 10,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: 10,
+                    }}
+                  >
+                    <div style={{ fontSize: 13, color: "#14532d" }}>
+                      <strong>Caja {ap.caja}</strong> · {ap.cajero}
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
                       <button
-                        className="btn-small btn-view"
                         onClick={() => handleVerCaja(ap)}
+                        style={{
+                          border: "none",
+                          borderRadius: 6,
+                          padding: "6px 10px",
+                          background: "#2563eb",
+                          color: "#fff",
+                          fontWeight: 700,
+                          fontSize: 12,
+                          cursor: "pointer",
+                        }}
                       >
                         👁️ Ver
                       </button>
                       <button
-                        className="btn-small btn-close"
                         onClick={() => handleAbrirCierre(ap)}
+                        style={{
+                          border: "none",
+                          borderRadius: 6,
+                          padding: "6px 10px",
+                          background: "#dc2626",
+                          color: "#fff",
+                          fontWeight: 700,
+                          fontSize: 12,
+                          cursor: "pointer",
+                        }}
                       >
                         🔒 Cerrar
                       </button>
                     </div>
                   </div>
-                ))}
-                {filtroId !== null && (
-                  <button
-                    className="btn-small btn-secondary"
-                    onClick={() => setFiltroId(null)}
-                    style={{ width: "100%" }}
-                  >
-                    Quitar filtro
-                  </button>
-                )}
-              </div>
-            )}
+                ))
+              )}
+            </div>
           </div>
 
-          <div className="stat-card alert-card">
-            <div className="stat-icon">⚠️</div>
-            <div className="stat-title">Diferencia sin aclarar</div>
-            <div className="stat-value">
-              L{" "}
-              {sumaDiferencia.toLocaleString("de-DE", {
-                minimumFractionDigits: 2,
-              })}
+          <div
+            style={{
+              background: "#fff",
+              border: "1px solid #e2e8f0",
+              borderRadius: 12,
+              boxShadow: "0 2px 10px rgba(0,0,0,0.06)",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                background: "linear-gradient(135deg, #f59e0b 0%, #ea580c 100%)",
+                color: "#fff",
+                padding: "14px 16px",
+                fontWeight: 800,
+                fontSize: 14,
+              }}
+            >
+              ⚠️ Diferencias por Aclarar
             </div>
-            {/* Desglose por tipo */}
-            <div style={{ marginTop: "0.75rem" }}>
-              <div className="valores-grid" style={{ gap: "0.5rem" }}>
-                <div className="valor-item" style={{ padding: "0.5rem" }}>
-                  <div style={{ fontSize: "0.75rem", opacity: 0.9 }}>
+            <div style={{ padding: "14px 16px" }}>
+              <div style={{ marginBottom: 12 }}>
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "#64748b",
+                    fontWeight: 700,
+                    textTransform: "uppercase",
+                  }}
+                >
+                  Total diferencia
+                </div>
+                <div
+                  style={{
+                    fontSize: 26,
+                    fontWeight: 900,
+                    color: sumaDiferencia >= 0 ? "#dc2626" : "#16a34a",
+                  }}
+                >
+                  L{" "}
+                  {sumaDiferencia.toLocaleString("de-DE", {
+                    minimumFractionDigits: 2,
+                  })}
+                </div>
+              </div>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+                  gap: 8,
+                }}
+              >
+                <div
+                  style={{
+                    background: "#f8fafc",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: 8,
+                    padding: 8,
+                    textAlign: "center",
+                  }}
+                >
+                  <div
+                    style={{ fontSize: 10, color: "#64748b", fontWeight: 700 }}
+                  >
                     Efectivo
                   </div>
-                  <div style={{ fontWeight: 700 }}>
+                  <div
+                    style={{ fontSize: 13, fontWeight: 800, color: "#166534" }}
+                  >
                     L{" "}
                     {sumaEfectivoSinAclarar.toLocaleString("de-DE", {
                       minimumFractionDigits: 2,
                     })}
                   </div>
                 </div>
-                <div className="valor-item" style={{ padding: "0.5rem" }}>
-                  <div style={{ fontSize: "0.75rem", opacity: 0.9 }}>
+                <div
+                  style={{
+                    background: "#f8fafc",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: 8,
+                    padding: 8,
+                    textAlign: "center",
+                  }}
+                >
+                  <div
+                    style={{ fontSize: 10, color: "#64748b", fontWeight: 700 }}
+                  >
                     Tarjeta
                   </div>
-                  <div style={{ fontWeight: 700 }}>
+                  <div
+                    style={{ fontSize: 13, fontWeight: 800, color: "#1d4ed8" }}
+                  >
                     L{" "}
                     {sumaTarjetaSinAclarar.toLocaleString("de-DE", {
                       minimumFractionDigits: 2,
                     })}
                   </div>
                 </div>
-                <div className="valor-item" style={{ padding: "0.5rem" }}>
-                  <div style={{ fontSize: "0.75rem", opacity: 0.9 }}>
-                    Transferencias
+                <div
+                  style={{
+                    background: "#f8fafc",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: 8,
+                    padding: 8,
+                    textAlign: "center",
+                  }}
+                >
+                  <div
+                    style={{ fontSize: 10, color: "#64748b", fontWeight: 700 }}
+                  >
+                    Transfer.
                   </div>
-                  <div style={{ fontWeight: 700 }}>
+                  <div
+                    style={{ fontSize: 13, fontWeight: 800, color: "#7c3aed" }}
+                  >
                     L{" "}
                     {sumaTransferenciasSinAclarar.toLocaleString("de-DE", {
                       minimumFractionDigits: 2,
@@ -931,11 +1288,21 @@ export default function CierresAdminView({
                 </div>
               </div>
             </div>
-            {/* Botón de clave eliminado según solicitud */}
           </div>
         </div>
 
-        <h2 className="title">📊 Cierres Registrados</h2>
+        <div
+          style={{
+            background: "#fff",
+            border: "1px solid #e2e8f0",
+            borderRadius: 12,
+            boxShadow: "0 2px 10px rgba(0,0,0,0.06)",
+            padding: "12px 16px",
+            marginBottom: 12,
+          }}
+        >
+          <h2 className="title">📊 Cierres Registrados</h2>
+        </div>
         {loading ? (
           <div className="loading">⏳ Cargando cierres...</div>
         ) : cierresFiltrados.length === 0 ? (

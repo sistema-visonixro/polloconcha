@@ -172,6 +172,8 @@ export interface ProductoCache {
   nombre: string;
   precio: number;
   tipo: string;
+  tipo_impuesto?: string;
+  tasa_impuesto?: number;
   complementos?: string;
   piezas?: string;
   subcategoria?: string;
@@ -220,6 +222,83 @@ export interface DatosNegocioCache {
 
 // Variable global para la conexión DB
 let db: IDBDatabase | null = null;
+
+function normalizarTasaImpuesto(
+  tipoImpuesto?: string | number | null,
+  tipoProducto?: string,
+): number {
+  if (typeof tipoImpuesto === "number" && Number.isFinite(tipoImpuesto)) {
+    if (tipoImpuesto >= 1) return tipoImpuesto / 100;
+    return tipoImpuesto;
+  }
+
+  const raw = String(tipoImpuesto ?? "")
+    .trim()
+    .toLowerCase();
+
+  if (
+    raw === "isv" ||
+    raw === "venta" ||
+    raw === "15" ||
+    raw === "15%" ||
+    raw === "0.15"
+  ) {
+    return 0.15;
+  }
+
+  if (raw === "alcohol" || raw === "18" || raw === "18%" || raw === "0.18") {
+    return 0.18;
+  }
+
+  const asNum = Number(raw.replace("%", ""));
+  if (Number.isFinite(asNum)) {
+    if (asNum >= 1) return asNum / 100;
+    return asNum;
+  }
+
+  if (tipoProducto === "comida") return 0.15;
+  if (tipoProducto === "bebida") return 0.18;
+  return 0;
+}
+
+function normalizarProductoImpuesto<T extends Record<string, any>>(
+  producto: T,
+): T {
+  const tasa = normalizarTasaImpuesto(producto?.tipo_impuesto, producto?.tipo);
+  return {
+    ...producto,
+    tipo_impuesto: String(tasa),
+    tasa_impuesto: tasa,
+  } as T;
+}
+
+function normalizarProductosVenta(raw: unknown): string {
+  try {
+    const arr: any[] = Array.isArray(raw)
+      ? (raw as any[])
+      : JSON.parse(String(raw || "[]"));
+
+    const normalizados = arr.map((item) => {
+      const tasa = normalizarTasaImpuesto(item?.tipo_impuesto, item?.tipo);
+      return {
+        ...item,
+        tipo_impuesto: String(tasa),
+        tasa_impuesto: tasa,
+      };
+    });
+
+    return JSON.stringify(normalizados);
+  } catch {
+    return String(raw ?? "[]");
+  }
+}
+
+function normalizarVentaImpuestos<T extends Record<string, any>>(venta: T): T {
+  return {
+    ...venta,
+    productos: normalizarProductosVenta(venta?.productos),
+  } as T;
+}
 
 function buildCaiCacheKey(
   cajeroId: string,
@@ -1311,7 +1390,9 @@ export async function sincronizarAperturasPendientes(): Promise<{
       efectivo_dia: Number(apertura.efectivo_dia ?? 0),
       monto_tarjeta_registrado: Number(apertura.monto_tarjeta_registrado ?? 0),
       monto_tarjeta_dia: Number(apertura.monto_tarjeta_dia ?? 0),
-      transferencias_registradas: Number(apertura.transferencias_registradas ?? 0),
+      transferencias_registradas: Number(
+        apertura.transferencias_registradas ?? 0,
+      ),
       transferencias_dia: Number(apertura.transferencias_dia ?? 0),
       dolares_registrado: Number(apertura.dolares_registrado ?? 0),
       dolares_dia: Number(apertura.dolares_dia ?? 0),
@@ -1333,7 +1414,11 @@ export async function sincronizarAperturasPendientes(): Promise<{
       if (!syncedId) throw new Error("No se obtuvo id de apertura insertada");
 
       // Borrar el registro temporal con id negativo/string y guardar con id real
-      try { await deleteById(STORE.CIERRES, apertura.id); } catch { /* ignore */ }
+      try {
+        await deleteById(STORE.CIERRES, apertura.id);
+      } catch {
+        /* ignore */
+      }
       await upsertOne(STORE.CIERRES, {
         ...apertura,
         id: syncedId,
@@ -1342,10 +1427,15 @@ export async function sincronizarAperturasPendientes(): Promise<{
         pending_sync: false,
       });
 
-      console.log(`[aperturas] Apertura sincronizada OK (id Supabase: ${syncedId})`);
+      console.log(
+        `[aperturas] Apertura sincronizada OK (id Supabase: ${syncedId})`,
+      );
       exitosos++;
     } catch (error) {
-      console.error("[aperturas] Error sincronizando apertura pendiente:", error);
+      console.error(
+        "[aperturas] Error sincronizando apertura pendiente:",
+        error,
+      );
       fallidos++;
     }
   }
@@ -1376,7 +1466,9 @@ export async function sincronizarCierresPendientes(): Promise<{
       efectivo_dia: Number(cierre.efectivo_dia ?? 0),
       monto_tarjeta_registrado: Number(cierre.monto_tarjeta_registrado ?? 0),
       monto_tarjeta_dia: Number(cierre.monto_tarjeta_dia ?? 0),
-      transferencias_registradas: Number(cierre.transferencias_registradas ?? 0),
+      transferencias_registradas: Number(
+        cierre.transferencias_registradas ?? 0,
+      ),
       transferencias_dia: Number(cierre.transferencias_dia ?? 0),
       dolares_registrado: Number(cierre.dolares_registrado ?? 0),
       dolares_dia: Number(cierre.dolares_dia ?? 0),
@@ -1479,7 +1571,6 @@ export async function sincronizarTodo(): Promise<{
     console.log(
       `[sync] Completa: ${facturas.exitosas} facturas (legado), ${pagos.exitosos} pagos (legado), ` +
         `${ventasResult.exitosas} ventas, ${aperturasResult.exitosos} aperturas, ${cierresResult.exitosos} cierres, ${gastos.exitosos} gastos, ${envios.exitosos} envíos.`,
-
     );
 
     return { facturas, pagos, gastos, envios };
@@ -1589,7 +1680,7 @@ export async function guardarProductosCache(productos: any[]): Promise<void> {
 
       productos.forEach((producto) => {
         const productoCache: ProductoCache = {
-          ...producto,
+          ...normalizarProductoImpuesto(producto),
           timestamp: Date.now(),
         };
 
@@ -1629,7 +1720,10 @@ export async function obtenerProductosCache(): Promise<ProductoCache[]> {
     const request = store.getAll();
 
     request.onsuccess = () => {
-      resolve(request.result as ProductoCache[]);
+      const normalizados = ((request.result as ProductoCache[]) || []).map(
+        (producto) => normalizarProductoImpuesto(producto),
+      );
+      resolve(normalizados);
     };
 
     request.onerror = () => {
@@ -1715,7 +1809,10 @@ export async function actualizarCacheProductos(): Promise<{
 
     // Compatibilidad: algunos esquemas no tienen columna "activo"
     if (error && (error as any)?.code === "42703") {
-      const fallback = await supabase.from("productos").select("*").order("nombre");
+      const fallback = await supabase
+        .from("productos")
+        .select("*")
+        .order("nombre");
       productos = fallback.data;
       error = fallback.error;
     }
@@ -2256,7 +2353,7 @@ export async function guardarVentaLocal(
     const store = transaction.objectStore(VENTAS_STORE);
 
     const ventaConMeta: Omit<VentaPendiente, "id"> = {
-      ...venta,
+      ...normalizarVentaImpuestos(venta),
       timestamp: Date.now(),
       intentos: 0,
     };
@@ -2282,7 +2379,10 @@ export async function guardarVentaLocal(
       typeof (venta as any).id === "number"
         ? (venta as any).id
         : -Math.abs(localId);
-    await upsertOne(STORE.VENTAS, { ...venta, id: tempId });
+    await upsertOne(STORE.VENTAS, {
+      ...normalizarVentaImpuestos(venta),
+      id: tempId,
+    });
   } catch (e) {
     console.error("[offlineSync] No se pudo guardar venta en STORE.VENTAS:", e);
   }
@@ -2316,7 +2416,9 @@ export async function eliminarVentaLocal(id: number): Promise<void> {
   });
 }
 
-function inferirTipoComprobanteVenta(venta: VentaPendiente): TipoComprobanteFiscal {
+function inferirTipoComprobanteVenta(
+  venta: VentaPendiente,
+): TipoComprobanteFiscal {
   const tipo = String((venta as any).tipo_documento_fiscal || "").toUpperCase();
   if (tipo === "FACTURA" || tipo === "RECIBO") {
     return tipo as TipoComprobanteFiscal;
@@ -2333,7 +2435,8 @@ function extraerSecuencialVenta(
   const tipoComprobante = inferirTipoComprobanteVenta(venta);
 
   if (tipoComprobante === "FACTURA") {
-    const raw = (venta as any).numero_secuencial ?? facturaFinal ?? venta.factura;
+    const raw =
+      (venta as any).numero_secuencial ?? facturaFinal ?? venta.factura;
     const match = String(raw ?? "").match(/(\d+)$/);
     if (!match) return null;
     const sec = parseInt(match[1], 10);
@@ -2347,7 +2450,11 @@ function extraerSecuencialVenta(
 async function sincronizarCorrelativosCai(
   correlativos: Map<
     string,
-    { cajeroId: string; tipoComprobante: TipoComprobanteFiscal; siguiente: number }
+    {
+      cajeroId: string;
+      tipoComprobante: TipoComprobanteFiscal;
+      siguiente: number;
+    }
   >,
 ): Promise<void> {
   if (correlativos.size === 0) return;
@@ -2394,7 +2501,10 @@ async function sincronizarCorrelativosCai(
         );
       }
     } catch (err) {
-      console.error("[ventas] Error inesperado sincronizando correlativo:", err);
+      console.error(
+        "[ventas] Error inesperado sincronizando correlativo:",
+        err,
+      );
     }
   }
 }
@@ -2419,7 +2529,11 @@ export async function sincronizarVentas(): Promise<{
   let fallidas = 0;
   const correlativosPorSincronizar = new Map<
     string,
-    { cajeroId: string; tipoComprobante: TipoComprobanteFiscal; siguiente: number }
+    {
+      cajeroId: string;
+      tipoComprobante: TipoComprobanteFiscal;
+      siguiente: number;
+    }
   >();
 
   const registrarCorrelativoSincronizado = (
@@ -2447,7 +2561,8 @@ export async function sincronizarVentas(): Promise<{
 
   for (const venta of pendientes) {
     try {
-      const { id, timestamp, intentos, sync_status, ...ventaData } = venta;
+      const { id, timestamp, intentos, sync_status, ...ventaDataRaw } = venta;
+      const ventaData = normalizarVentaImpuestos(ventaDataRaw);
 
       const { error } = await supabase.from("ventas").upsert([ventaData], {
         onConflict: "operation_id",

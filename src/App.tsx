@@ -113,7 +113,9 @@ function App() {
 
     const forzarSyncTotal = () => {
       if (!navigator.onLine) {
-        alert("⚠️ No hay internet. No se puede forzar la sincronización total.");
+        alert(
+          "⚠️ No hay internet. No se puede forzar la sincronización total.",
+        );
         return;
       }
       // Sincronizar y luego recargar la app
@@ -849,7 +851,9 @@ function App() {
             {shouldReloadAfterSync ? (
               <>
                 <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
-                <p style={{ fontWeight: 700, fontSize: 18, margin: "0 0 12px" }}>
+                <p
+                  style={{ fontWeight: 700, fontSize: 18, margin: "0 0 12px" }}
+                >
                   ¡Actualización completada!
                 </p>
                 <p style={{ fontSize: 12, opacity: 0.7, margin: "0 0 12px" }}>

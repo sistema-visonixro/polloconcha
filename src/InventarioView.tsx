@@ -31,7 +31,7 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
   const [error, setError] = useState("");
   const [form, setForm] = useState<Partial<Producto>>({
     tipo: "comida",
-    tipo_impuesto: "venta",
+    tipo_impuesto: "0.15",
   });
   const [editId, setEditId] = useState<string | null>(null);
   const [imagenFile, setImagenFile] = useState<File | null>(null);
@@ -56,10 +56,56 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
     fetchProductos();
   }, []);
 
+  const normalizarTipoImpuesto = (tipo: string | undefined | null) => {
+    const raw = String(tipo || "")
+      .trim()
+      .toLowerCase();
+    if (raw === "isv" || raw === "venta" || raw === "15" || raw === "15%") {
+      return "0.15";
+    }
+    if (raw === "alcohol" || raw === "18" || raw === "18%") {
+      return "0.18";
+    }
+
+    const asNumber = Number(raw.replace("%", ""));
+    if (Number.isFinite(asNumber)) {
+      if (asNumber >= 1) {
+        if (Math.abs(asNumber - 15) < 0.001) return "0.15";
+        if (Math.abs(asNumber - 18) < 0.001) return "0.18";
+      } else {
+        if (Math.abs(asNumber - 0.15) < 0.001) return "0.15";
+        if (Math.abs(asNumber - 0.18) < 0.001) return "0.18";
+      }
+    }
+
+    return "0.15";
+  };
+
   const calcularImpuesto = (precio: number, tipo_impuesto: string) => {
-    if (tipo_impuesto === "venta") return precio * 0.15;
-    if (tipo_impuesto === "alcohol") return precio * 0.18;
-    return 0;
+    const tasa = Number(normalizarTipoImpuesto(tipo_impuesto));
+    return precio * (Number.isFinite(tasa) ? tasa : 0.15);
+  };
+
+  const obtenerEtiquetaImpuesto = (producto: Producto): string => {
+    const tipoRaw = normalizarTipoImpuesto(producto.tipo_impuesto);
+
+    if (tipoRaw === "0.15") {
+      return "15%";
+    }
+
+    if (tipoRaw === "0.18") {
+      return "18%";
+    }
+
+    const precio = Number(producto.precio || 0);
+    const impuesto = Number(producto.impuesto || 0);
+    if (precio > 0) {
+      const ratio = impuesto / precio;
+      if (Math.abs(ratio - 0.15) < 0.02) return "15%";
+      if (Math.abs(ratio - 0.18) < 0.02) return "18%";
+    }
+
+    return "15%";
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -69,7 +115,7 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
 
     let imagenUrl = form.imagen || "";
     const precio = form.precio || 0;
-    const tipo_impuesto = form.tipo_impuesto || "venta";
+    const tipo_impuesto = normalizarTipoImpuesto(form.tipo_impuesto);
     const impuesto = calcularImpuesto(precio, tipo_impuesto);
     const sub_total = precio + impuesto;
 
@@ -127,7 +173,7 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
       }
 
       setShowModal(false);
-      setForm({ tipo: "comida", tipo_impuesto: "venta" });
+      setForm({ tipo: "comida", tipo_impuesto: "0.15" });
       setImagenFile(null);
       setEditId(null);
 
@@ -156,14 +202,17 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
 
   const handleEdit = (producto: Producto) => {
     setEditId(producto.id ?? null);
-    setForm(producto);
+    setForm({
+      ...producto,
+      tipo_impuesto: normalizarTipoImpuesto(producto.tipo_impuesto),
+    });
     setImagenFile(null);
     setShowModal(true);
   };
 
   const handleNew = () => {
     setEditId(null);
-    setForm({ tipo: "comida", tipo_impuesto: "venta" });
+    setForm({ tipo: "comida", tipo_impuesto: "0.15" });
     setImagenFile(null);
     setShowModal(true);
   };
@@ -175,6 +224,18 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
   const complementoCount = productos.filter(
     (p) => p.tipo === "complemento",
   ).length;
+  const subcategoriasRegistradas = Array.from(
+    new Set(
+      productos
+        .filter((p) => p.tipo === "comida")
+        .map((p) =>
+          String(p.subcategoria || "")
+            .trim()
+            .toUpperCase(),
+        )
+        .filter((sub) => sub.length > 0),
+    ),
+  ).sort((a, b) => a.localeCompare(b, "es"));
 
   // ── Complementos opciones (modal CRUD) ──────────────────────────────────
   const [showComplementosModal, setShowComplementosModal] = useState(false);
@@ -280,23 +341,27 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
           min-width: 100vw;
           width: 100vw;
           height: 100vh;
-          background: linear-gradient(135deg, #f8fafc 0%, #e0e7ff 100%);
+          background: #f0f4f8;
           font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
           margin: 0 !important;
-          padding: 0 !important;
+          padding: 1.25rem !important;
           box-sizing: border-box !important;
           overflow-x: hidden;
         }
 
         .header {
-          background: rgba(255, 255, 255, 0.95);
-          backdrop-filter: blur(20px);
-          border-bottom: 1px solid var(--border);
-          padding: 1.5rem 2.5rem;
+          background: linear-gradient(135deg, #0b4f9a 0%, #1976d2 100%);
+          border: 1px solid #0b4f9a;
+          border-radius: 14px;
+          padding: 1.25rem 1.5rem;
           display: flex;
           justify-content: space-between;
           align-items: center;
-          box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+          box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+          margin: 0 auto 1rem;
+          max-width: 1460px;
+          gap: 12px;
+          flex-wrap: wrap;
         }
 
         .header-left {
@@ -306,12 +371,12 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
         }
 
         .btn-back {
-          background: #f1f5f9;
-          color: var(--text-primary);
-          border: 1px solid var(--border);
+          background: rgba(255, 255, 255, 0.16);
+          color: #fff;
+          border: 1px solid rgba(255,255,255,0.35);
           border-radius: 8px;
           padding: 8px 16px;
-          font-weight: 600;
+          font-weight: 700;
           cursor: pointer;
           transition: all 0.2s ease;
           display: flex;
@@ -320,24 +385,24 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
         }
 
         .btn-back:hover {
-          background: #e2e8f0;
-          border-color: var(--accent);
+          background: rgba(255,255,255,0.24);
         }
 
         .page-title {
-          color: var(--text-primary);
-          font-size: 1.5rem;
-          font-weight: 700;
+          color: #fff;
+          font-size: 1.7rem;
+          font-weight: 900;
           margin: 0;
+          letter-spacing: 0.5px;
         }
 
         .btn-primary {
-          background: linear-gradient(135deg, #2e7d32, #4caf50);
+          background: linear-gradient(135deg, #0b4f9a 0%, #1976d2 100%);
           color: white;
           border: none;
           border-radius: 8px;
           padding: 10px 20px;
-          font-weight: 600;
+          font-weight: 700;
           cursor: pointer;
           transition: all 0.2s ease;
           display: flex;
@@ -347,35 +412,40 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
 
         .btn-primary:hover {
           transform: translateY(-1px);
-          box-shadow: 0 4px 12px rgba(46,125,50,0.4);
+          box-shadow: 0 6px 16px rgba(25,118,210,0.35);
         }
 
         .main-content {
-          padding: 2rem;
-          max-width: 1400px;
+          padding: 0;
+          max-width: 1460px;
           margin: 0 auto;
         }
 
         .stats-grid {
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-          gap: 1.5rem;
-          margin-bottom: 2rem;
+          gap: 0;
+          margin-bottom: 1rem;
+          border: 1px solid #e2e8f0;
+          border-radius: 12px;
+          overflow: hidden;
+          background: #fff;
         }
 
         .stat-card {
           background: white;
-          border: 1px solid var(--border);
-          border-radius: 12px;
-          padding: 1.5rem;
+          border-right: 1px solid var(--border);
+          border-radius: 0;
+          padding: 1rem;
           text-align: center;
-          box-shadow: var(--shadow);
-          transition: all 0.3s ease;
+          box-shadow: none;
+          transition: background 0.2s ease;
         }
 
         .stat-card:hover {
-          transform: translateY(-4px);
-          box-shadow: var(--shadow-hover);
+          transform: none;
+          box-shadow: none;
+          background: #f8fafc;
         }
 
         .stat-value {
@@ -386,15 +456,18 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
 
         .stat-label {
           color: var(--text-secondary);
-          font-size: 0.875rem;
+          font-size: 0.73rem;
+          font-weight: 700;
           margin-top: 0.25rem;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
         }
 
         .table-container {
           background: white;
           border-radius: 12px;
           overflow: hidden;
-          box-shadow: var(--shadow);
+          box-shadow: 0 2px 10px rgba(0,0,0,0.06);
           margin-bottom: 2rem;
           border: 1px solid var(--border);
         }
@@ -405,18 +478,18 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
         }
 
         .table th {
-          background: linear-gradient(135deg, #dbeafe 0%, #e0e7ff 100%);
+          background: linear-gradient(135deg, #0b4f9a 0%, #1976d2 100%);
           padding: 1rem;
           text-align: left;
-          font-weight: 600;
-          color: var(--text-primary);
+          font-weight: 700;
+          color: #0f172a;
           border-bottom: 1px solid var(--border);
         }
 
         .table td {
           padding: 1rem;
           border-bottom: 1px solid var(--border);
-          color: var(--text-secondary);
+          color: #0f172a;
         }
 
   /* Cards para móvil: ocultas por defecto en escritorio */
@@ -437,7 +510,7 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
         .product-card .card-meta { color: var(--text-secondary); font-size: 0.9rem; }
 
         .table tr:hover {
-          background: rgba(255,255,255,0.05);
+          background: #f8fafc;
         }
 
         .product-image {
@@ -460,18 +533,18 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
         }
 
         .btn-edit { 
-          background: rgba(255,152,0,0.2); 
-          color: #ff9800; 
+          background: #ffedd5; 
+          color: #9a3412; 
         }
 
-        .btn-edit:hover { background: rgba(255,152,0,0.3); }
+        .btn-edit:hover { background: #fed7aa; }
 
         .btn-delete { 
-          background: rgba(198,40,40,0.2); 
-          color: #c62828; 
+          background: #fee2e2; 
+          color: #991b1b; 
         }
 
-        .btn-delete:hover { background: rgba(198,40,40,0.3); }
+        .btn-delete:hover { background: #fecaca; }
 
         .error {
           background: rgba(198,40,40,0.1);
@@ -506,7 +579,7 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
           background: white;
           backdrop-filter: blur(20px);
           border: 1px solid var(--border);
-          border-radius: 24px;
+          border-radius: 18px;
           padding: 0;
           min-width: 520px;
           max-width: 92vw;
@@ -516,8 +589,8 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
         }
 
         .modal-hero {
-          background: linear-gradient(135deg, #1e3a5f 0%, #2e7d32 100%);
-          border-radius: 24px 24px 0 0;
+          background: linear-gradient(135deg, #0b4f9a 0%, #1976d2 100%);
+          border-radius: 18px 18px 0 0;
           padding: 1.75rem 2rem 1.5rem;
           display: flex;
           justify-content: space-between;
@@ -566,6 +639,7 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
 
         .modal-body {
           padding: 1.75rem 2rem;
+          color: #0f172a;
         }
 
         .modal-section {
@@ -584,8 +658,8 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
         }
 
         .price-preview {
-          background: linear-gradient(135deg, #f0fdf4, #e0f2fe);
-          border: 1px solid #bbf7d0;
+          background: linear-gradient(135deg, #f8fbff, #eef6ff);
+          border: 1px solid #bfdbfe;
           border-radius: 12px;
           padding: 1rem 1.25rem;
           display: flex;
@@ -665,7 +739,7 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
         }
 
         .form-input, .form-select {
-          background: rgba(255,255,255,0.1);
+          background: #fff;
           border: 1px solid var(--border);
           border-radius: 8px;
           padding: 12px;
@@ -675,13 +749,13 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
 
         .form-input:focus, .form-select:focus {
           outline: none;
-          border-color: #4caf50;
-          box-shadow: 0 0 0 3px rgba(76,175,80,0.1);
+          border-color: #1976d2;
+          box-shadow: 0 0 0 3px rgba(25,118,210,0.12);
         }
 
         .form-file {
           padding: 12px;
-          background: rgba(255,255,255,0.1);
+          background: #fff;
           border: 1px solid var(--border);
           border-radius: 8px;
           color: var(--text-secondary);
@@ -705,21 +779,44 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
           <button className="btn-back" onClick={onBack}>
             ← Volver
           </button>
-          <h1 className="page-title">Control de Inventario</h1>
+          <div>
+            <h1 className="page-title">📦 Control de Inventario</h1>
+            <div
+              style={{
+                color: "rgba(255,255,255,0.9)",
+                fontSize: 12,
+                fontWeight: 600,
+              }}
+            >
+              Gestión administrativa de productos, costos y complementos
+            </div>
+          </div>
         </div>
-        <button
-          className="btn-primary"
-          style={{ background: "#4caf50", marginRight: 8 }}
-          onClick={() => {
-            setShowComplementosModal(true);
-            fetchComplementosOpciones();
-          }}
-        >
-          🍗 Complementos
-        </button>
-        <button className="btn-primary" onClick={handleNew}>
-          ➕ Nuevo Producto
-        </button>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button
+            className="btn-primary"
+            style={{
+              background: "rgba(255,255,255,0.18)",
+              border: "1px solid rgba(255,255,255,0.35)",
+            }}
+            onClick={() => {
+              setShowComplementosModal(true);
+              fetchComplementosOpciones();
+            }}
+          >
+            🍗 Complementos
+          </button>
+          <button
+            className="btn-primary"
+            style={{
+              background: "rgba(255,255,255,0.95)",
+              color: "#0b4f9a",
+            }}
+            onClick={handleNew}
+          >
+            ➕ Nuevo Producto
+          </button>
+        </div>
       </header>
 
       <main className="main-content">
@@ -760,11 +857,9 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
             <button
               className="btn-table"
               style={{
-                background:
-                  filtroTipo === "comida"
-                    ? "rgba(46,125,50,0.15)"
-                    : "transparent",
-                color: "#4caf50",
+                background: filtroTipo === "comida" ? "#dbeafe" : "#f8fafc",
+                color: "#1d4ed8",
+                border: "1px solid #bfdbfe",
               }}
               onClick={() => setFiltroTipo("comida")}
             >
@@ -773,11 +868,9 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
             <button
               className="btn-table"
               style={{
-                background:
-                  filtroTipo === "bebida"
-                    ? "rgba(255,152,0,0.12)"
-                    : "transparent",
-                color: "#ff9800",
+                background: filtroTipo === "bebida" ? "#dbeafe" : "#f8fafc",
+                color: "#1d4ed8",
+                border: "1px solid #bfdbfe",
               }}
               onClick={() => setFiltroTipo("bebida")}
             >
@@ -787,10 +880,9 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
               className="btn-table"
               style={{
                 background:
-                  filtroTipo === "complemento"
-                    ? "rgba(156,39,176,0.12)"
-                    : "transparent",
-                color: "#9c27b0",
+                  filtroTipo === "complemento" ? "#dbeafe" : "#f8fafc",
+                color: "#1d4ed8",
+                border: "1px solid #bfdbfe",
               }}
               onClick={() => setFiltroTipo("complemento")}
             >
@@ -856,8 +948,8 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
                       </div>
                     )}
                     <div className="card-meta">
-                      Impuesto: {p.tipo_impuesto === "venta" ? "15%" : "18%"} ·
-                      Subtotal: L {p.sub_total.toFixed(2)}
+                      Impuesto: {obtenerEtiquetaImpuesto(p)} · Subtotal: L{" "}
+                      {p.sub_total.toFixed(2)}
                     </div>
                   </div>
                   <div
@@ -887,6 +979,10 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
         {/* Filtro tipo (Todos / Comida / Bebida) */}
         <div
           style={{
+            background: "#fff",
+            border: "1px solid #e2e8f0",
+            borderRadius: 10,
+            padding: "12px",
             display: "flex",
             gap: 8,
             margin: "1rem 0",
@@ -896,11 +992,9 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
           <button
             className="btn-table"
             style={{
-              background:
-                filtroTipo === "comida"
-                  ? "rgba(46,125,50,0.15)"
-                  : "transparent",
-              color: "#4caf50",
+              background: filtroTipo === "comida" ? "#dbeafe" : "#f8fafc",
+              color: "#1d4ed8",
+              border: "1px solid #bfdbfe",
             }}
             onClick={() => setFiltroTipo("comida")}
           >
@@ -909,11 +1003,9 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
           <button
             className="btn-table"
             style={{
-              background:
-                filtroTipo === "bebida"
-                  ? "rgba(255,152,0,0.12)"
-                  : "transparent",
-              color: "#ff9800",
+              background: filtroTipo === "bebida" ? "#dbeafe" : "#f8fafc",
+              color: "#1d4ed8",
+              border: "1px solid #bfdbfe",
             }}
             onClick={() => setFiltroTipo("bebida")}
           >
@@ -922,11 +1014,9 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
           <button
             className="btn-table"
             style={{
-              background:
-                filtroTipo === "complemento"
-                  ? "rgba(156,39,176,0.12)"
-                  : "transparent",
-              color: "#9c27b0",
+              background: filtroTipo === "complemento" ? "#dbeafe" : "#f8fafc",
+              color: "#1d4ed8",
+              border: "1px solid #bfdbfe",
             }}
             onClick={() => setFiltroTipo("complemento")}
           >
@@ -956,10 +1046,17 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
             >
               <h2
                 style={{
-                  color: "#fff",
-                  marginBottom: "1rem",
-                  marginTop: "2rem",
+                  color: "#0f172a",
+                  marginBottom: "0.8rem",
+                  marginTop: "0.4rem",
                   textAlign: "center",
+                  background: "#fff",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: 10,
+                  width: "100%",
+                  padding: "10px 12px",
+                  fontSize: "1.05rem",
+                  fontWeight: 900,
                 }}
               >
                 {filtroTipo === "comida" && "🍽️ Comidas"}
@@ -1036,7 +1133,7 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
                               </span>
                             )}
                           </td>
-                          <td>{p.tipo_impuesto === "venta" ? "15%" : "18%"}</td>
+                          <td>{obtenerEtiquetaImpuesto(p)}</td>
                           <td>L {p.sub_total.toFixed(2)}</td>
                           <td>
                             <button
@@ -1066,17 +1163,45 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
           <div className="modal-overlay" onClick={() => setShowModal(false)}>
             <div className="modal" onClick={(e) => e.stopPropagation()}>
               {/* Hero Header */}
-              <div className="modal-hero">
+              <div
+                className="modal-hero"
+                style={{
+                  background:
+                    "linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%)",
+                  borderBottom: "1px solid #bfdbfe",
+                }}
+              >
                 <div className="modal-hero-info">
-                  <div className="modal-hero-badge">
+                  <div
+                    className="modal-hero-badge"
+                    style={{
+                      background: "#1d4ed8",
+                      color: "#fff",
+                    }}
+                  >
                     {editId ? "Editar registro" : "Nuevo registro"}
                   </div>
-                  <h3 className="modal-hero-title">
+                  <h3 className="modal-hero-title" style={{ color: "#0f172a" }}>
                     {editId ? "✏️ Editar Producto" : "➕ Agregar Producto"}
                   </h3>
+                  <p
+                    style={{
+                      margin: "6px 0 0 0",
+                      fontSize: 12,
+                      color: "#334155",
+                      fontWeight: 600,
+                    }}
+                  >
+                    Completa la información comercial y de costos del producto.
+                  </p>
                 </div>
                 <button
                   className="modal-hero-close"
+                  style={{
+                    background: "#dbeafe",
+                    color: "#1e3a8a",
+                    border: "1px solid #bfdbfe",
+                  }}
                   onClick={() => setShowModal(false)}
                 >
                   ×
@@ -1086,8 +1211,19 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
               <div className="modal-body">
                 <form onSubmit={handleSubmit}>
                   {/* SECCIÓN: Información básica */}
-                  <div className="modal-section">
-                    <div className="modal-section-title">
+                  <div
+                    className="modal-section"
+                    style={{
+                      background: "#ffffff",
+                      border: "1px solid #e2e8f0",
+                      borderRadius: 12,
+                      padding: 14,
+                    }}
+                  >
+                    <div
+                      className="modal-section-title"
+                      style={{ color: "#475569" }}
+                    >
                       📋 Información básica
                     </div>
                     <div style={{ marginBottom: "1rem" }}>
@@ -1140,10 +1276,9 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
                             placeholder="ROSTIZADOS, FRITOS…"
                           />
                           <datalist id="subcategorias-list">
-                            <option value="ROSTIZADOS" />
-                            <option value="FRITOS" />
-                            <option value="TACOS" />
-                            <option value="ASADOS" />
+                            {subcategoriasRegistradas.map((sub) => (
+                              <option key={sub} value={sub} />
+                            ))}
                           </datalist>
                         </div>
                       )}
@@ -1151,8 +1286,21 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
                   </div>
 
                   {/* SECCIÓN: Precios */}
-                  <div className="modal-section">
-                    <div className="modal-section-title">💰 Precios</div>
+                  <div
+                    className="modal-section"
+                    style={{
+                      background: "#ffffff",
+                      border: "1px solid #e2e8f0",
+                      borderRadius: 12,
+                      padding: 14,
+                    }}
+                  >
+                    <div
+                      className="modal-section-title"
+                      style={{ color: "#475569" }}
+                    >
+                      💰 Precios y margen
+                    </div>
                     <div
                       className="form-grid"
                       style={{ gridTemplateColumns: "1fr 1fr" }}
@@ -1240,27 +1388,92 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
                   </div>
 
                   {/* SECCIÓN: Impuesto */}
-                  <div className="modal-section">
-                    <div className="modal-section-title">📊 Impuesto</div>
-                    <select
-                      className="form-select"
-                      style={{ width: "100%" }}
-                      value={form.tipo_impuesto || "venta"}
-                      onChange={(e) =>
-                        setForm((f) => ({
-                          ...f,
-                          tipo_impuesto: e.target.value,
-                        }))
-                      }
+                  <div
+                    className="modal-section"
+                    style={{
+                      background: "#ffffff",
+                      border: "1px solid #e2e8f0",
+                      borderRadius: 12,
+                      padding: 14,
+                    }}
+                  >
+                    <div
+                      className="modal-section-title"
+                      style={{ color: "#475569" }}
                     >
-                      <option value="venta">🧾 Venta (15%)</option>
-                      <option value="alcohol">🍺 Alcohol (18%)</option>
-                    </select>
+                      📊 Impuesto
+                    </div>
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "1fr 1fr",
+                        gap: 10,
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setForm((f) => ({ ...f, tipo_impuesto: "0.15" }))
+                        }
+                        style={{
+                          padding: "12px",
+                          borderRadius: 8,
+                          border:
+                            (form.tipo_impuesto || "0.15") === "0.15"
+                              ? "2px solid #1976d2"
+                              : "1px solid #cbd5e1",
+                          background:
+                            (form.tipo_impuesto || "0.15") === "0.15"
+                              ? "#dbeafe"
+                              : "#ffffff",
+                          color: "#0f172a",
+                          fontWeight: 800,
+                          cursor: "pointer",
+                        }}
+                      >
+                        🧾 15%
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setForm((f) => ({ ...f, tipo_impuesto: "0.18" }))
+                        }
+                        style={{
+                          padding: "12px",
+                          borderRadius: 8,
+                          border:
+                            (form.tipo_impuesto || "0.15") === "0.18"
+                              ? "2px solid #1976d2"
+                              : "1px solid #cbd5e1",
+                          background:
+                            (form.tipo_impuesto || "0.15") === "0.18"
+                              ? "#dbeafe"
+                              : "#ffffff",
+                          color: "#0f172a",
+                          fontWeight: 800,
+                          cursor: "pointer",
+                        }}
+                      >
+                        🍺 18%
+                      </button>
+                    </div>
                   </div>
 
                   {/* SECCIÓN: Imagen */}
-                  <div className="modal-section">
-                    <div className="modal-section-title">
+                  <div
+                    className="modal-section"
+                    style={{
+                      background: "#ffffff",
+                      border: "1px solid #e2e8f0",
+                      borderRadius: 12,
+                      padding: 14,
+                      marginBottom: 10,
+                    }}
+                  >
+                    <div
+                      className="modal-section-title"
+                      style={{ color: "#475569" }}
+                    >
                       📷 Imagen del Producto
                     </div>
                     <input
@@ -1299,23 +1512,50 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
                     )}
                   </div>
 
-                  <button
-                    type="submit"
-                    className="btn-primary"
-                    disabled={loading}
+                  <div
                     style={{
-                      width: "100%",
-                      justifyContent: "center",
-                      padding: "14px",
-                      fontSize: "1rem",
+                      display: "flex",
+                      gap: 10,
+                      justifyContent: "flex-end",
+                      borderTop: "1px solid #e2e8f0",
+                      paddingTop: 12,
                     }}
                   >
-                    {loading
-                      ? "⏳ Guardando..."
-                      : editId
-                        ? "💾 Guardar Cambios"
-                        : "✅ Crear Producto"}
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowModal(false)}
+                      style={{
+                        padding: "12px 18px",
+                        borderRadius: 8,
+                        border: "1px solid #cbd5e1",
+                        background: "#f8fafc",
+                        color: "#334155",
+                        fontWeight: 700,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      className="btn-primary"
+                      disabled={loading}
+                      style={{
+                        minWidth: 220,
+                        justifyContent: "center",
+                        padding: "12px 18px",
+                        fontSize: "1rem",
+                        background:
+                          "linear-gradient(135deg, #0b4f9a 0%, #1976d2 100%)",
+                      }}
+                    >
+                      {loading
+                        ? "⏳ Guardando..."
+                        : editId
+                          ? "💾 Guardar Cambios"
+                          : "✅ Crear Producto"}
+                    </button>
+                  </div>
                 </form>
               </div>
             </div>
@@ -1329,15 +1569,32 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
             onClick={() => setShowComplementosModal(false)}
           >
             <div className="modal" onClick={(e) => e.stopPropagation()}>
-              <div className="modal-hero">
+              <div
+                className="modal-hero"
+                style={{
+                  background:
+                    "linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%)",
+                  borderBottom: "1px solid #cbd5e1",
+                }}
+              >
                 <div className="modal-hero-info">
-                  <div className="modal-hero-badge">Configuración</div>
-                  <h3 className="modal-hero-title">
+                  <div
+                    className="modal-hero-badge"
+                    style={{ background: "#dbeafe", color: "#1e3a8a" }}
+                  >
+                    Configuración
+                  </div>
+                  <h3 className="modal-hero-title" style={{ color: "#0f172a" }}>
                     🍗 Complementos Incluidos
                   </h3>
                 </div>
                 <button
                   className="modal-hero-close"
+                  style={{
+                    background: "#f1f5f9",
+                    color: "#1e293b",
+                    border: "1px solid #cbd5e1",
+                  }}
                   onClick={() => setShowComplementosModal(false)}
                 >
                   ×
@@ -1350,6 +1607,10 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
                     fontSize: 13,
                     color: "var(--text-secondary)",
                     marginBottom: 16,
+                    background: "#f8fafc",
+                    border: "1px solid #e2e8f0",
+                    padding: "10px 12px",
+                    borderRadius: 8,
                   }}
                 >
                   Estas opciones aparecerán en el modal “COMPLEMENTOS INCLUIDOS”
@@ -1384,9 +1645,10 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
                         alignItems: "center",
                         gap: 8,
                         padding: "10px 14px",
-                        background: "var(--bg-secondary, #f5f5f5)",
+                        background: "#f8fafc",
                         borderRadius: 8,
-                        border: "1px solid var(--border, #ddd)",
+                        border: "1px solid #e2e8f0",
+                        color: "#0f172a",
                       }}
                     >
                       {editingComplemento?.id === c.id ? (
@@ -1397,6 +1659,7 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
                               flex: 1,
                               padding: "6px 10px",
                               fontSize: 14,
+                              color: "#0f172a",
                             }}
                             value={editComplementoNombre}
                             onChange={(e) =>
@@ -1414,14 +1677,24 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
                           />
                           <button
                             className="btn-primary"
-                            style={{ padding: "6px 14px", fontSize: 13 }}
+                            style={{
+                              padding: "6px 14px",
+                              fontSize: 13,
+                              background: "#dbeafe",
+                              color: "#1e3a8a",
+                              border: "1px solid #bfdbfe",
+                            }}
                             onClick={handleGuardarEdicionComplemento}
                           >
                             Guardar
                           </button>
                           <button
                             className="btn-table btn-delete"
-                            style={{ padding: "6px 10px", fontSize: 13 }}
+                            style={{
+                              padding: "6px 10px",
+                              fontSize: 13,
+                              color: "#0f172a",
+                            }}
                             onClick={() => {
                               setEditingComplemento(null);
                               setEditComplementoNombre("");
@@ -1433,13 +1706,22 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
                       ) : (
                         <>
                           <span
-                            style={{ flex: 1, fontWeight: 600, fontSize: 15 }}
+                            style={{
+                              flex: 1,
+                              fontWeight: 600,
+                              fontSize: 15,
+                              color: "#0f172a",
+                            }}
                           >
                             {c.nombre}
                           </span>
                           <button
                             className="btn-table btn-edit"
-                            style={{ padding: "4px 12px", fontSize: 13 }}
+                            style={{
+                              padding: "4px 12px",
+                              fontSize: 13,
+                              color: "#0f172a",
+                            }}
                             onClick={() => {
                               setEditingComplemento(c);
                               setEditComplementoNombre(c.nombre);
@@ -1449,7 +1731,11 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
                           </button>
                           <button
                             className="btn-table btn-delete"
-                            style={{ padding: "4px 12px", fontSize: 13 }}
+                            style={{
+                              padding: "4px 12px",
+                              fontSize: 13,
+                              color: "#0f172a",
+                            }}
                             onClick={() => handleEliminarComplemento(c.id)}
                           >
                             Eliminar
@@ -1480,7 +1766,13 @@ export default function InventarioView({ onBack }: InventarioViewProps) {
                   />
                   <button
                     className="btn-primary"
-                    style={{ padding: "10px 20px", fontSize: 15 }}
+                    style={{
+                      padding: "10px 20px",
+                      fontSize: 15,
+                      background: "#dbeafe",
+                      color: "#1e3a8a",
+                      border: "1px solid #bfdbfe",
+                    }}
                     onClick={handleAgregarComplemento}
                     disabled={complementoLoading || !nuevoComplemento.trim()}
                   >

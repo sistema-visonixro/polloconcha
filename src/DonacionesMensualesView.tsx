@@ -105,167 +105,242 @@ export default function DonacionesMensualesView({
     mesSeleccionado;
 
   return (
-    <div style={{ padding: 24, maxWidth: 1100, margin: "0 auto" }}>
-      {/* Header */}
+    <div
+      style={{
+        padding: "20px",
+        maxWidth: 1360,
+        margin: "0 auto",
+        background: "#f0f4f8",
+        minHeight: "100vh",
+      }}
+    >
       <div
         style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginBottom: 24,
-          flexWrap: "wrap",
-          gap: 12,
+          marginBottom: "20px",
+          borderRadius: "14px",
+          overflow: "hidden",
+          boxShadow: "0 4px 20px rgba(0, 0, 0, 0.08)",
         }}
       >
-        <div>
-          <h2
-            style={{
-              margin: 0,
-              color: "#7c3aed",
-              fontWeight: 800,
-              fontSize: 28,
-            }}
-          >
-            🎁 Donaciones Mensuales
-          </h2>
-          <p style={{ margin: "4px 0 0 0", color: "#64748b", fontSize: 14 }}>
-            Platillos y bebidas regalados (autorizados por Admin)
-          </p>
-        </div>
-        {onBack && (
-          <button
-            onClick={onBack}
-            style={{
-              background: "#7c3aed",
-              color: "#fff",
-              border: "none",
-              borderRadius: 8,
-              padding: "8px 18px",
-              fontWeight: 700,
-              fontSize: 14,
-              cursor: "pointer",
-            }}
-          >
-            ← Volver
-          </button>
-        )}
-      </div>
-
-      {/* Filtro de mes */}
-      <div
-        style={{
-          background: "#f8fafc",
-          borderRadius: 12,
-          padding: 16,
-          marginBottom: 20,
-          display: "flex",
-          alignItems: "center",
-          gap: 16,
-          flexWrap: "wrap",
-        }}
-      >
-        <label
-          style={{ fontWeight: 700, color: "#7c3aed", fontSize: 15 }}
-          htmlFor="select-mes"
-        >
-          Filtrar por mes:
-        </label>
-        <select
-          id="select-mes"
-          value={mesSeleccionado}
-          onChange={(e) => setMesSeleccionado(e.target.value)}
+        <div
           style={{
-            padding: "8px 14px",
-            borderRadius: 8,
-            border: "2px solid #7c3aed",
-            fontSize: 14,
-            fontWeight: 600,
-            color: "#1e1b4b",
-            background: "#fff",
-            cursor: "pointer",
+            background: "linear-gradient(135deg, #0b4f9a 0%, #1976d2 100%)",
+            color: "#fff",
+            padding: "24px 28px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            flexWrap: "wrap",
           }}
         >
-          {mesesDisponibles.map((m) => (
-            <option key={m.value} value={m.value}>
-              {m.label}
-            </option>
-          ))}
-        </select>
-        <span style={{ color: "#64748b", fontSize: 13 }}>
-          Mostrando: <strong>{mesLabel}</strong>
-        </span>
-      </div>
-
-      {/* Tarjetas resumen */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-          gap: 14,
-          marginBottom: 24,
-        }}
-      >
-        {[
-          {
-            label: "Total Donaciones",
-            value: totalFacturas,
-            icon: "🎁",
-            color: "#7c3aed",
-            bg: "#f5f3ff",
-          },
-          {
-            label: "Platillos Donados",
-            value: Math.round(totalPlatillos),
-            icon: "🍖",
-            color: "#dc2626",
-            bg: "#fef2f2",
-          },
-          {
-            label: "Bebidas Donadas",
-            value: Math.round(totalBebidas),
-            icon: "🥤",
-            color: "#0284c7",
-            bg: "#f0f9ff",
-          },
-        ].map((card) => (
-          <div
-            key={card.label}
-            style={{
-              background: card.bg,
-              borderRadius: 12,
-              padding: "16px 18px",
-              textAlign: "center",
-              border: `2px solid ${card.color}22`,
-            }}
-          >
-            <div style={{ fontSize: 28 }}>{card.icon}</div>
-            <div
+          <div>
+            <h2
               style={{
+                margin: "0 0 8px 0",
                 fontSize: 28,
                 fontWeight: 900,
-                color: card.color,
-                marginTop: 4,
+                letterSpacing: 0.8,
               }}
             >
-              {card.value}
-            </div>
+              🎁 Donaciones Mensuales
+            </h2>
+            <p style={{ margin: 0, fontSize: 13, opacity: 0.92 }}>
+              Platillos y bebidas regalados (autorizados por Admin)
+            </p>
+          </div>
+          {onBack && (
+            <button
+              onClick={onBack}
+              style={{
+                background: "rgba(255,255,255,0.18)",
+                color: "#fff",
+                border: "1px solid rgba(255,255,255,0.35)",
+                borderRadius: 8,
+                padding: "10px 16px",
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              ← Volver
+            </button>
+          )}
+        </div>
+
+        <div
+          style={{
+            background: "#fff",
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
+            borderTop: "1px solid #dbe2ea",
+          }}
+        >
+          <div
+            style={{
+              padding: "14px 16px",
+              borderRight: "1px solid #e2e8f0",
+              textAlign: "center",
+            }}
+          >
             <div
               style={{
-                fontSize: 12,
+                fontSize: 11,
+                fontWeight: 700,
                 color: "#64748b",
-                fontWeight: 600,
-                marginTop: 2,
+                textTransform: "uppercase",
               }}
             >
-              {card.label}
+              Mes Activo
+            </div>
+            <div style={{ fontSize: 14, fontWeight: 800, color: "#0f172a" }}>
+              {mesLabel}
             </div>
           </div>
-        ))}
+          <div
+            style={{
+              padding: "14px 16px",
+              borderRight: "1px solid #e2e8f0",
+              textAlign: "center",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                color: "#64748b",
+                textTransform: "uppercase",
+              }}
+            >
+              Total Donaciones
+            </div>
+            <div style={{ fontSize: 24, fontWeight: 900, color: "#7c3aed" }}>
+              {totalFacturas}
+            </div>
+          </div>
+          <div
+            style={{
+              padding: "14px 16px",
+              borderRight: "1px solid #e2e8f0",
+              textAlign: "center",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                color: "#64748b",
+                textTransform: "uppercase",
+              }}
+            >
+              Platillos Donados
+            </div>
+            <div style={{ fontSize: 24, fontWeight: 900, color: "#dc2626" }}>
+              {Math.round(totalPlatillos)}
+            </div>
+          </div>
+          <div style={{ padding: "14px 16px", textAlign: "center" }}>
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                color: "#64748b",
+                textTransform: "uppercase",
+              }}
+            >
+              Bebidas Donadas
+            </div>
+            <div style={{ fontSize: 24, fontWeight: 900, color: "#0284c7" }}>
+              {Math.round(totalBebidas)}
+            </div>
+          </div>
+        </div>
       </div>
 
-      {/* Tabla */}
+      <div
+        style={{
+          marginBottom: "18px",
+          background: "#fff",
+          border: "1px solid #e2e8f0",
+          borderRadius: "10px",
+          padding: "16px",
+          boxShadow: "0 2px 8px rgba(0, 0, 0, 0.04)",
+        }}
+      >
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+            gap: 10,
+            alignItems: "end",
+          }}
+        >
+          <div>
+            <label
+              htmlFor="select-mes"
+              style={{
+                display: "block",
+                fontSize: 11,
+                fontWeight: 700,
+                color: "#64748b",
+                marginBottom: 6,
+                textTransform: "uppercase",
+                letterSpacing: 0.5,
+              }}
+            >
+              📅 Mes
+            </label>
+            <select
+              id="select-mes"
+              value={mesSeleccionado}
+              onChange={(e) => setMesSeleccionado(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                borderRadius: 6,
+                border: "1px solid #cbd5e1",
+                fontSize: 13,
+                color: "#0f172a",
+                background: "#fff",
+                fontFamily: "inherit",
+                cursor: "pointer",
+              }}
+            >
+              {mesesDisponibles.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div
+            style={{
+              background: "#f8fafc",
+              border: "1px solid #e2e8f0",
+              borderRadius: 8,
+              padding: "10px 12px",
+              fontSize: 13,
+              color: "#334155",
+              fontWeight: 600,
+            }}
+          >
+            Mostrando período:{" "}
+            <span style={{ color: "#0b4f9a" }}>{mesLabel}</span>
+          </div>
+        </div>
+      </div>
+
       {loading ? (
-        <div style={{ textAlign: "center", padding: 40, color: "#7c3aed" }}>
+        <div
+          style={{
+            textAlign: "center",
+            padding: 42,
+            background: "#fff",
+            border: "1px solid #e2e8f0",
+            borderRadius: 12,
+            color: "#0b4f9a",
+            fontWeight: 700,
+          }}
+        >
           Cargando donaciones...
         </div>
       ) : donaciones.length === 0 ? (
@@ -275,7 +350,8 @@ export default function DonacionesMensualesView({
             padding: 48,
             color: "#94a3b8",
             fontSize: 16,
-            background: "#f8fafc",
+            background: "#fff",
+            border: "1px solid #e2e8f0",
             borderRadius: 12,
           }}
         >
@@ -283,13 +359,22 @@ export default function DonacionesMensualesView({
           No hay donaciones registradas en {mesLabel}
         </div>
       ) : (
-        <div style={{ overflowX: "auto" }}>
+        <div
+          style={{
+            overflowX: "auto",
+            background: "#fff",
+            border: "1px solid #e2e8f0",
+            borderRadius: 12,
+            boxShadow: "0 2px 10px rgba(0,0,0,0.06)",
+          }}
+        >
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr
                 style={{
-                  background: "#7c3aed",
-                  color: "#fff",
+                  background:
+                    "linear-gradient(135deg, #0b4f9a 0%, #1976d2 100%)",
+                  color: "#0f172a",
                   textAlign: "left",
                 }}
               >
@@ -330,7 +415,8 @@ export default function DonacionesMensualesView({
                     key={i}
                     style={{
                       borderBottom: "1px solid #e2e8f0",
-                      background: i % 2 === 0 ? "#fff" : "#faf5ff",
+                      background: i % 2 === 0 ? "#fff" : "#f8fafc",
+                      color: "#0f172a",
                     }}
                   >
                     <td
@@ -355,12 +441,13 @@ export default function DonacionesMensualesView({
                     <td style={{ padding: "10px 12px", textAlign: "center" }}>
                       <span
                         style={{
-                          background: "#fef2f2",
-                          color: "#dc2626",
-                          padding: "2px 10px",
+                          background: "#fff1f2",
+                          color: "#0f172a",
+                          padding: "3px 10px",
                           borderRadius: 20,
                           fontWeight: 700,
                           fontSize: 14,
+                          border: "1px solid #fecdd3",
                         }}
                       >
                         {Math.round(d.platillos)}
@@ -369,12 +456,13 @@ export default function DonacionesMensualesView({
                     <td style={{ padding: "10px 12px", textAlign: "center" }}>
                       <span
                         style={{
-                          background: "#f0f9ff",
-                          color: "#0284c7",
-                          padding: "2px 10px",
+                          background: "#eff6ff",
+                          color: "#0f172a",
+                          padding: "3px 10px",
                           borderRadius: 20,
                           fontWeight: 700,
                           fontSize: 14,
+                          border: "1px solid #bfdbfe",
                         }}
                       >
                         {Math.round(d.bebidas)}
@@ -384,7 +472,7 @@ export default function DonacionesMensualesView({
                       style={{
                         padding: "10px 12px",
                         fontSize: 12,
-                        color: "#64748b",
+                        color: "#0f172a",
                         maxWidth: 240,
                         overflow: "hidden",
                         textOverflow: "ellipsis",
@@ -401,8 +489,9 @@ export default function DonacionesMensualesView({
             <tfoot>
               <tr
                 style={{
-                  background: "#7c3aed",
-                  color: "#fff",
+                  background:
+                    "linear-gradient(135deg, #0b4f9a 0%, #1976d2 100%)",
+                  color: "#0f172a",
                   fontWeight: 800,
                 }}
               >

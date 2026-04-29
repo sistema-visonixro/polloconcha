@@ -8,7 +8,7 @@ import { compareTurnoRecordsByRecency } from "./fechas";
 
 // ─────────────────────────── Configuración DB ──────────────────────────────
 const DB_NAME = "CarnitasRoaLocalDB";
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 
 export const STORE = {
   VENTAS: "ventas",
@@ -52,6 +52,8 @@ export const STORE = {
   RECETAS_DETALLE: "recetas_detalle",
   RECIBO_CONFIG: "recibo_config",
   STOCK_PRODUCTOS: "stock_productos",
+  DEVOLUCIONSE: "devolucionse",
+  AUDITORIA_FACTURAS: "auditoria_facturas",
 } as const;
 
 export interface ResumenTurno {
@@ -94,6 +96,82 @@ export interface SyncProgress {
   filas: number;
   status: "ok" | "error" | "skip";
   error?: string;
+}
+
+function normalizarTasaImpuesto(
+  tipoImpuesto?: string | number | null,
+  tipoProducto?: string,
+): number {
+  if (typeof tipoImpuesto === "number" && Number.isFinite(tipoImpuesto)) {
+    if (tipoImpuesto >= 1) return tipoImpuesto / 100;
+    return tipoImpuesto;
+  }
+
+  const raw = String(tipoImpuesto ?? "")
+    .trim()
+    .toLowerCase();
+
+  if (
+    raw === "isv" ||
+    raw === "venta" ||
+    raw === "15" ||
+    raw === "15%" ||
+    raw === "0.15"
+  ) {
+    return 0.15;
+  }
+  if (raw === "alcohol" || raw === "18" || raw === "18%" || raw === "0.18") {
+    return 0.18;
+  }
+
+  const asNum = Number(raw.replace("%", ""));
+  if (Number.isFinite(asNum)) {
+    if (asNum >= 1) return asNum / 100;
+    return asNum;
+  }
+
+  if (tipoProducto === "comida") return 0.15;
+  if (tipoProducto === "bebida") return 0.18;
+  return 0;
+}
+
+function normalizarProductoImpuesto<T extends Record<string, any>>(
+  producto: T,
+): T {
+  const tasa = normalizarTasaImpuesto(producto?.tipo_impuesto, producto?.tipo);
+  return {
+    ...producto,
+    tipo_impuesto: String(tasa),
+    tasa_impuesto: tasa,
+  } as T;
+}
+
+function normalizarProductosVenta(raw: unknown): string {
+  try {
+    const arr: any[] = Array.isArray(raw)
+      ? (raw as any[])
+      : JSON.parse(String(raw || "[]"));
+
+    const normalizados = arr.map((item) => {
+      const tasa = normalizarTasaImpuesto(item?.tipo_impuesto, item?.tipo);
+      return {
+        ...item,
+        tipo_impuesto: String(tasa),
+        tasa_impuesto: tasa,
+      };
+    });
+
+    return JSON.stringify(normalizados);
+  } catch {
+    return String(raw ?? "[]");
+  }
+}
+
+function normalizarVentaImpuestos<T extends Record<string, any>>(venta: T): T {
+  return {
+    ...venta,
+    productos: normalizarProductosVenta(venta?.productos),
+  } as T;
 }
 
 // ─────────────────────────── Apertura de la DB ─────────────────────────────
@@ -226,6 +304,28 @@ export function openLocalDB(): Promise<IDBDatabase> {
       if (oldVersion < 4) {
         ensureStore(STORE.PIEZAS_OPCIONES, { keyPath: "id" });
         ensureStore(STORE.POS_CONFIG, { keyPath: "id" });
+      }
+
+      if (oldVersion < 5) {
+        ensureStore(
+          STORE.DEVOLUCIONSE,
+          { keyPath: "id", autoIncrement: true },
+          [
+            { name: "factura_id", keyPath: "factura_id" },
+            { name: "fecha_hora", keyPath: "fecha_hora" },
+            { name: "usuario", keyPath: "usuario" },
+            { name: "synced", keyPath: "synced" },
+          ],
+        );
+        ensureStore(
+          STORE.AUDITORIA_FACTURAS,
+          { keyPath: "id", autoIncrement: true },
+          [
+            { name: "factura_id", keyPath: "factura_id" },
+            { name: "fecha_hora", keyPath: "fecha_hora" },
+            { name: "tipo_cambio", keyPath: "tipo_cambio" },
+          ],
+        );
       }
     };
 
@@ -502,9 +602,13 @@ export async function sincronizarTodoDesdeSupabase(
     try {
       const { data, error } = await supabase.from(tabla).select("*");
       if (error) throw error;
+      const filas =
+        tabla === "productos"
+          ? (data ?? []).map((row: any) => normalizarProductoImpuesto(row))
+          : (data ?? []);
       await clearStore(store);
-      await upsertBulk(store, data ?? []);
-      report(tabla, (data ?? []).length, "ok");
+      await upsertBulk(store, filas);
+      report(tabla, filas.length, "ok");
     } catch (e: any) {
       report(tabla, 0, "error", e?.message);
     }
@@ -571,13 +675,20 @@ export async function sincronizarTodoDesdeSupabase(
         (r) =>
           (typeof r.id === "number" && r.id < 0) || r.pending_sync === true,
       );
+      const filas =
+        tabla === "ventas"
+          ? (data ?? []).map((row: any) => normalizarVentaImpuestos(row))
+          : (data ?? []);
       await clearStore(store);
-      await upsertBulk(store, data ?? []);
+      await upsertBulk(store, filas);
       // Reinsertar los pendientes offline que aún no llegaron a Supabase
       for (const p of pendientesOffline) {
-        await upsertOne(store, p);
+        await upsertOne(
+          store,
+          tabla === "ventas" ? normalizarVentaImpuestos(p) : p,
+        );
       }
-      report(tabla, (data ?? []).length, "ok");
+      report(tabla, filas.length, "ok");
     } catch (e: any) {
       report(tabla, 0, "error", e?.message);
     }
@@ -612,7 +723,12 @@ export async function sincronizarDiaActual(cajeroId?: string): Promise<void> {
       .gte("fecha_hora", hoy)
       .order("id", { ascending: false })
       .limit(500);
-    if (data && data.length > 0) await upsertBulk(STORE.VENTAS, data);
+    if (data && data.length > 0) {
+      await upsertBulk(
+        STORE.VENTAS,
+        data.map((row: any) => normalizarVentaImpuestos(row)),
+      );
+    }
   } catch {
     /* silencioso */
   }
@@ -657,7 +773,9 @@ export async function getDatosNegocioLocal(): Promise<any | null> {
 
 export async function getProductosLocal(): Promise<any[]> {
   const prods = await getAll(STORE.PRODUCTOS);
-  return prods.sort((a, b) => (a.codigo ?? 0) - (b.codigo ?? 0));
+  return prods
+    .map((p) => normalizarProductoImpuesto(p))
+    .sort((a, b) => (a.codigo ?? 0) - (b.codigo ?? 0));
 }
 
 // alias
@@ -945,7 +1063,10 @@ export async function guardarVentaLocal(
   aperturaId?: number | null,
 ): Promise<void> {
   // Si la venta no tiene id (viene del flujo Supabase que lo asigna), usar id temporal negativo
-  const ventaConId = venta.id != null ? venta : { ...venta, id: -Date.now() };
+  const ventaConId =
+    venta.id != null
+      ? normalizarVentaImpuestos(venta)
+      : { ...normalizarVentaImpuestos(venta), id: -Date.now() };
   await upsertOne(STORE.VENTAS, ventaConId);
   await encolarEscritura({
     tabla: "ventas",

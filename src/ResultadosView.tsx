@@ -165,7 +165,11 @@ export default function ResultadosView({
         ? new Date(resumenTurno.fecha_cierre).getTime()
         : Date.now();
 
-      const ventasIdb = await getByIndex<any>(STORE.VENTAS, "cajero_id", cajeroId);
+      const ventasIdb = await getByIndex<any>(
+        STORE.VENTAS,
+        "cajero_id",
+        cajeroId,
+      );
       let deliverySum = 0;
       for (const venta of ventasIdb) {
         const ts = new Date(venta.fecha_hora ?? 0).getTime();
@@ -2905,85 +2909,446 @@ export default function ResultadosView({
         </div>
       </header>
 
-      <main className="main-content">
-        {/* Filtros */}
-        <div className="filters">
-          <div className="filter-group">
-            <label>📅 Desde:</label>
-            <input
-              type="datetime-local"
-              value={desde}
-              onChange={(e) => setDesde(e.target.value)}
-              className="filter-input"
-            />
-          </div>
-          <div className="filter-group">
-            <label>hasta:</label>
-            <input
-              type="datetime-local"
-              value={hasta}
-              onChange={(e) => setHasta(e.target.value)}
-              className="filter-input"
-            />
-          </div>
-          <div className="filter-group">
-            <label>👤 Cajero:</label>
-            <select
-              value={cajeroFiltro}
-              onChange={(e) => setCajeroFiltro(e.target.value)}
-              className="filter-select"
+      <main className="main-content" style={{ background: "#f0f4f8" }}>
+        {/* BANNER SUPERIOR - Stats Principales */}
+        <div
+          style={{
+            marginBottom: "24px",
+            borderRadius: "14px",
+            overflow: "hidden",
+            boxShadow: "0 4px 20px rgba(0, 0, 0, 0.08)",
+          }}
+        >
+          {/* Header Stats */}
+          <div
+            style={{
+              background: "linear-gradient(135deg, #0b4f9a 0%, #1976d2 100%)",
+              color: "#fff",
+              padding: "28px 32px",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <div>
+              <h2
+                style={{
+                  margin: "0 0 8px 0",
+                  fontSize: "28px",
+                  fontWeight: 900,
+                  letterSpacing: 1,
+                }}
+              >
+                📊 Dashboard Financiero
+              </h2>
+              <p
+                style={{
+                  margin: 0,
+                  fontSize: "13px",
+                  opacity: 0.95,
+                  fontWeight: 500,
+                }}
+              >
+                {desde && hasta
+                  ? `${desde.split("T")[0]} hasta ${hasta.split("T")[0]}`
+                  : "Todos los datos"}
+              </p>
+            </div>
+            <div
+              style={{
+                textAlign: "right",
+              }}
             >
-              <option value="">Todos</option>
-              {cajeros.map((cajero) => (
-                <option key={cajero.id} value={cajero.id}>
-                  {cajero.nombre}
-                </option>
-              ))}
-            </select>
+              <div
+                style={{
+                  fontSize: "32px",
+                  fontWeight: 900,
+                  marginBottom: "4px",
+                }}
+              >
+                L{" "}
+                {totalVentas.toLocaleString("de-DE", {
+                  minimumFractionDigits: 2,
+                })}
+              </div>
+              <div style={{ fontSize: "12px", opacity: 0.9, fontWeight: 700 }}>
+                TOTAL VENTAS
+              </div>
+            </div>
           </div>
-          <button className="btn-filter" onClick={fetchDatos}>
-            🔍 Filtrar
-          </button>
-          <button
-            className="btn-filter"
-            onClick={async () => {
-              await generarReportePDF();
+
+          {/* Stats Grid */}
+          <div
+            style={{
+              background: "#fff",
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+              gap: 0,
+              borderTop: "1px solid #e2e8f0",
             }}
-            title="Generar reporte listo para imprimir"
-            style={{ marginLeft: 8 }}
           >
-            📝 Reporte PDF
-          </button>
-          <button
-            className="btn-filter"
-            onClick={async () => {
-              await generarReporteFacturas();
+            <div
+              style={{
+                padding: "16px",
+                borderRight: "1px solid #e2e8f0",
+                textAlign: "center",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "11px",
+                  color: "#64748b",
+                  fontWeight: 700,
+                  marginBottom: "6px",
+                  textTransform: "uppercase",
+                }}
+              >
+                Efectivo
+              </div>
+              <div
+                style={{ fontSize: "20px", fontWeight: 900, color: "#16a34a" }}
+              >
+                L{" "}
+                {pagosTotales.efectivo.toLocaleString("de-DE", {
+                  minimumFractionDigits: 2,
+                })}
+              </div>
+            </div>
+            <div
+              style={{
+                padding: "16px",
+                borderRight: "1px solid #e2e8f0",
+                textAlign: "center",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "11px",
+                  color: "#64748b",
+                  fontWeight: 700,
+                  marginBottom: "6px",
+                  textTransform: "uppercase",
+                }}
+              >
+                Tarjeta
+              </div>
+              <div
+                style={{ fontSize: "20px", fontWeight: 900, color: "#1d4ed8" }}
+              >
+                L{" "}
+                {pagosTotales.tarjeta.toLocaleString("de-DE", {
+                  minimumFractionDigits: 2,
+                })}
+              </div>
+            </div>
+            <div
+              style={{
+                padding: "16px",
+                borderRight: "1px solid #e2e8f0",
+                textAlign: "center",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "11px",
+                  color: "#64748b",
+                  fontWeight: 700,
+                  marginBottom: "6px",
+                  textTransform: "uppercase",
+                }}
+              >
+                Transferencia
+              </div>
+              <div
+                style={{ fontSize: "20px", fontWeight: 900, color: "#6d28d9" }}
+              >
+                L{" "}
+                {pagosTotales.transferencia.toLocaleString("de-DE", {
+                  minimumFractionDigits: 2,
+                })}
+              </div>
+            </div>
+            <div
+              style={{
+                padding: "16px",
+                textAlign: "center",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "11px",
+                  color: "#64748b",
+                  fontWeight: 700,
+                  marginBottom: "6px",
+                  textTransform: "uppercase",
+                }}
+              >
+                Dólares
+              </div>
+              <div
+                style={{ fontSize: "20px", fontWeight: 900, color: "#92400e" }}
+              >
+                ${" "}
+                {pagosTotales.dolares_usd.toLocaleString("de-DE", {
+                  minimumFractionDigits: 2,
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* FILTROS COMPACTOS - Diseño minimalista */}
+        <div
+          style={{
+            marginBottom: "24px",
+            background: "#fff",
+            border: "1px solid #e2e8f0",
+            borderRadius: "10px",
+            padding: "18px 20px",
+            boxShadow: "0 2px 8px rgba(0, 0, 0, 0.04)",
+          }}
+        >
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+              gap: "12px",
+              marginBottom: "14px",
             }}
-            title="Generar reporte de facturas detalladas"
-            style={{ marginLeft: 8 }}
           >
-            📋 Reporte Facturas
-          </button>
-          <button
-            className="btn-filter"
-            onClick={async () => {
-              await generarReporteGastos();
+            {/* Desde */}
+            <div>
+              <label
+                style={{
+                  display: "block",
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  color: "#64748b",
+                  marginBottom: "6px",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.5px",
+                }}
+              >
+                📅 Desde
+              </label>
+              <input
+                type="datetime-local"
+                value={desde}
+                onChange={(e) => setDesde(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "6px",
+                  fontSize: "13px",
+                  fontFamily: "inherit",
+                  color: "#0f172a",
+                }}
+              />
+            </div>
+
+            {/* Hasta */}
+            <div>
+              <label
+                style={{
+                  display: "block",
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  color: "#64748b",
+                  marginBottom: "6px",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.5px",
+                }}
+              >
+                📋 Hasta
+              </label>
+              <input
+                type="datetime-local"
+                value={hasta}
+                onChange={(e) => setHasta(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "6px",
+                  fontSize: "13px",
+                  fontFamily: "inherit",
+                  color: "#0f172a",
+                }}
+              />
+            </div>
+
+            {/* Cajero */}
+            <div>
+              <label
+                style={{
+                  display: "block",
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  color: "#64748b",
+                  marginBottom: "6px",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.5px",
+                }}
+              >
+                👤 Cajero
+              </label>
+              <select
+                value={cajeroFiltro}
+                onChange={(e) => setCajeroFiltro(e.target.value)}
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "6px",
+                  fontSize: "13px",
+                  fontFamily: "inherit",
+                  color: "#0f172a",
+                  background: "#fff",
+                }}
+              >
+                <option value="">📌 Todos</option>
+                {cajeros.map((cajero) => (
+                  <option key={cajero.id} value={cajero.id}>
+                    {cajero.nombre}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Botones de acción */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
+              gap: "10px",
             }}
-            title="Generar reporte de gastos detallados"
-            style={{ marginLeft: 8 }}
           >
-            💸 Reporte Gastos
-          </button>
-          <button
-            className="btn-filter"
-            onClick={async () => {
-              await generarReportePagos();
-            }}
-            title="Generar reporte de pagos detallados"
-            style={{ marginLeft: 8 }}
-          >
-            💳 Reporte Pagos
-          </button>
+            <button
+              onClick={fetchDatos}
+              style={{
+                padding: "10px 16px",
+                background: "linear-gradient(135deg, #1976d2 0%, #0b4f9a 100%)",
+                color: "#fff",
+                border: "none",
+                borderRadius: "6px",
+                fontWeight: 700,
+                fontSize: "13px",
+                cursor: "pointer",
+                transition: "all 0.2s",
+              }}
+              onMouseEnter={(e) => {
+                (e.target as HTMLButtonElement).style.transform =
+                  "translateY(-2px)";
+                (e.target as HTMLButtonElement).style.boxShadow =
+                  "0 6px 16px rgba(25, 118, 210, 0.3)";
+              }}
+              onMouseLeave={(e) => {
+                (e.target as HTMLButtonElement).style.transform =
+                  "translateY(0)";
+                (e.target as HTMLButtonElement).style.boxShadow = "none";
+              }}
+            >
+              🔍 Filtrar
+            </button>
+            <button
+              onClick={async () => {
+                await generarReportePDF();
+              }}
+              style={{
+                padding: "10px 16px",
+                background: "#e0e7ff",
+                color: "#3730a3",
+                border: "none",
+                borderRadius: "6px",
+                fontWeight: 700,
+                fontSize: "13px",
+                cursor: "pointer",
+                transition: "all 0.2s",
+              }}
+              onMouseEnter={(e) => {
+                (e.target as HTMLButtonElement).style.background = "#c7d2fe";
+              }}
+              onMouseLeave={(e) => {
+                (e.target as HTMLButtonElement).style.background = "#e0e7ff";
+              }}
+            >
+              📄 PDF
+            </button>
+            <button
+              onClick={async () => {
+                await generarReporteFacturas();
+              }}
+              style={{
+                padding: "10px 16px",
+                background: "#fce7f3",
+                color: "#be185d",
+                border: "none",
+                borderRadius: "6px",
+                fontWeight: 700,
+                fontSize: "13px",
+                cursor: "pointer",
+                transition: "all 0.2s",
+              }}
+              onMouseEnter={(e) => {
+                (e.target as HTMLButtonElement).style.background = "#fbcfe8";
+              }}
+              onMouseLeave={(e) => {
+                (e.target as HTMLButtonElement).style.background = "#fce7f3";
+              }}
+            >
+              🧾 Facturas
+            </button>
+            <button
+              onClick={async () => {
+                await generarReporteGastos();
+              }}
+              style={{
+                padding: "10px 16px",
+                background: "#fee2e2",
+                color: "#991b1b",
+                border: "none",
+                borderRadius: "6px",
+                fontWeight: 700,
+                fontSize: "13px",
+                cursor: "pointer",
+                transition: "all 0.2s",
+              }}
+              onMouseEnter={(e) => {
+                (e.target as HTMLButtonElement).style.background = "#fecaca";
+              }}
+              onMouseLeave={(e) => {
+                (e.target as HTMLButtonElement).style.background = "#fee2e2";
+              }}
+            >
+              💸 Gastos
+            </button>
+            <button
+              onClick={async () => {
+                await generarReportePagos();
+              }}
+              style={{
+                padding: "10px 16px",
+                background: "#dbeafe",
+                color: "#0c2d6b",
+                border: "none",
+                borderRadius: "6px",
+                fontWeight: 700,
+                fontSize: "13px",
+                cursor: "pointer",
+                transition: "all 0.2s",
+              }}
+              onMouseEnter={(e) => {
+                (e.target as HTMLButtonElement).style.background = "#bfdbfe";
+              }}
+              onMouseLeave={(e) => {
+                (e.target as HTMLButtonElement).style.background = "#dbeafe";
+              }}
+            >
+              💳 Pagos
+            </button>
+          </div>
         </div>
 
         {/* Turnos activos desde v_resumen_turnos */}
@@ -3003,232 +3368,342 @@ export default function ResultadosView({
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
-              padding: "12px 18px",
-              borderBottom: "1px solid #e2e8f0",
-              background: "#f8fafc",
+              padding: "16px 24px",
+              background: "linear-gradient(135deg, #0b4f9a 0%, #1976d2 100%)",
+              borderRadius: "12px 12px 0 0",
+              marginBottom: 0,
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 18 }}>🏦</span>
-              <span style={{ fontWeight: 700, fontSize: 15, color: "#0f172a" }}>
-                Resumen de Caja — Turnos
-              </span>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <span style={{ fontSize: 28 }}>🏦</span>
+              <div>
+                <div
+                  style={{
+                    fontWeight: 900,
+                    fontSize: 22,
+                    color: "#fff",
+                    letterSpacing: 1,
+                  }}
+                >
+                  Resumen de Caja
+                </div>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,0.8)" }}>
+                  Turnos completados y activos
+                </div>
+              </div>
             </div>
             <button
               onClick={fetchTurnosResumen}
               style={{
-                fontSize: 12,
-                padding: "5px 14px",
-                borderRadius: 7,
-                border: "1.5px solid #cbd5e1",
-                background: "#ffffff",
+                fontSize: 13,
+                padding: "10px 18px",
+                borderRadius: 8,
+                border: "2px solid rgba(255,255,255,0.3)",
+                background: "rgba(255,255,255,0.1)",
+                color: "#fff",
+                fontWeight: 700,
                 cursor: "pointer",
-                color: "#334155",
-                fontWeight: 600,
+                transition: "all 0.2s",
+              }}
+              onMouseEnter={(e) => {
+                (e.target as HTMLButtonElement).style.background =
+                  "rgba(255,255,255,0.2)";
+                (e.target as HTMLButtonElement).style.borderColor =
+                  "rgba(255,255,255,0.5)";
+              }}
+              onMouseLeave={(e) => {
+                (e.target as HTMLButtonElement).style.background =
+                  "rgba(255,255,255,0.1)";
+                (e.target as HTMLButtonElement).style.borderColor =
+                  "rgba(255,255,255,0.3)";
               }}
             >
               {turnosLoading ? "⏳ Cargando..." : "↺ Actualizar"}
             </button>
           </div>
-          {/* Tabla */}
-          <div style={{ overflowX: "auto" }}>
-            <table
-              style={{
-                width: "100%",
-                borderCollapse: "collapse",
-                fontSize: 13,
-                minWidth: 900,
-              }}
-            >
-              <thead>
-                <tr style={{ background: "#f1f5f9" }}>
-                  {[
-                    { label: "Cajero", align: "left" as const },
-                    { label: "Caja", align: "left" as const },
-                    { label: "Apertura", align: "left" as const },
-                    { label: "Ef. Neto", align: "right" as const },
-                    { label: "Tarjeta", align: "right" as const },
-                    { label: "Transfer.", align: "right" as const },
-                    { label: "$ USD", align: "right" as const },
-                    { label: "Total Ventas", align: "right" as const },
-                    { label: "Gastos", align: "right" as const },
-                    { label: "🍽 Plat.", align: "center" as const },
-                    { label: "🥤 Beb.", align: "center" as const },
-                  ].map(({ label, align }) => (
-                    <th
-                      key={label}
+
+          {/* Grid de Cards */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(380px, 1fr))",
+              gap: "18px",
+              padding: "20px",
+              background: "#f8fafc",
+              borderRadius: "0 0 12px 12px",
+              minHeight: turnosResumen.length === 0 ? "200px" : "auto",
+            }}
+          >
+            {turnosLoading ? (
+              <div
+                style={{
+                  gridColumn: "1 / -1",
+                  padding: "40px",
+                  textAlign: "center",
+                  color: "#64748b",
+                }}
+              >
+                <div style={{ fontSize: "32px", marginBottom: "12px" }}>⏳</div>
+                <div>Cargando turnos...</div>
+              </div>
+            ) : turnosResumen.length === 0 ? (
+              <div
+                style={{
+                  gridColumn: "1 / -1",
+                  padding: "40px",
+                  textAlign: "center",
+                  color: "#64748b",
+                }}
+              >
+                <div style={{ fontSize: "32px", marginBottom: "12px" }}>📭</div>
+                <div>Sin turnos registrados</div>
+              </div>
+            ) : (
+              turnosResumen.map((t) => {
+                const estaAbierto =
+                  !t.fecha_cierre ||
+                  new Date(t.fecha_cierre) > new Date(Date.now() + 60000);
+
+                const formatearFecha = (fecha: string) => {
+                  if (!fecha) return "—";
+                  return new Date(fecha)
+                    .toLocaleString("es-HN", {
+                      year: "numeric",
+                      month: "2-digit",
+                      day: "2-digit",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })
+                    .replace(",", "");
+                };
+
+                return (
+                  <div
+                    key={t.apertura_id}
+                    style={{
+                      background: "#fff",
+                      borderRadius: "14px",
+                      overflow: "hidden",
+                      boxShadow: "0 4px 12px rgba(0, 0, 0, 0.08)",
+                      border: estaAbierto
+                        ? "2px solid #22c55e"
+                        : "1px solid #e2e8f0",
+                      transition:
+                        "transform 0.2s, box-shadow 0.2s, border-color 0.2s",
+                      cursor: "pointer",
+                    }}
+                    onMouseEnter={(e) => {
+                      const el = e.currentTarget as HTMLDivElement;
+                      el.style.transform = "translateY(-4px)";
+                      el.style.boxShadow = "0 12px 24px rgba(0, 0, 0, 0.12)";
+                    }}
+                    onMouseLeave={(e) => {
+                      const el = e.currentTarget as HTMLDivElement;
+                      el.style.transform = "translateY(0)";
+                      el.style.boxShadow = "0 4px 12px rgba(0, 0, 0, 0.08)";
+                    }}
+                  >
+                    {/* Card Header */}
+                    <div
                       style={{
-                        padding: "9px 14px",
-                        fontWeight: 700,
-                        fontSize: 11,
-                        textTransform: "uppercase" as const,
-                        letterSpacing: "0.05em",
-                        color: "#475569",
-                        whiteSpace: "nowrap",
-                        borderBottom: "2px solid #e2e8f0",
-                        textAlign: align,
+                        background: estaAbierto
+                          ? "linear-gradient(135deg, #22c55e 0%, #16a34a 100%)"
+                          : "linear-gradient(135deg, #0b4f9a 0%, #1976d2 100%)",
+                        color: "#fff",
+                        padding: "16px",
+                        position: "relative",
                       }}
                     >
-                      {label}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {turnosLoading ? (
-                  <tr>
-                    <td
-                      colSpan={11}
-                      style={{
-                        padding: 18,
-                        textAlign: "center",
-                        color: "#64748b",
-                        fontSize: 14,
-                      }}
-                    >
-                      ⏳ Cargando turnos...
-                    </td>
-                  </tr>
-                ) : turnosResumen.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={11}
-                      style={{
-                        padding: 18,
-                        textAlign: "center",
-                        color: "#64748b",
-                        fontSize: 14,
-                      }}
-                    >
-                      Sin turnos registrados
-                    </td>
-                  </tr>
-                ) : (
-                  turnosResumen.map((t, idx) => {
-                    const estaAbierto =
-                      !t.fecha_cierre ||
-                      new Date(t.fecha_cierre) > new Date(Date.now() + 60000);
-                    const fmtDate = (d: string) => {
-                      if (!d)
-                        return <span style={{ color: "#94a3b8" }}>—</span>;
-                      const clean = d.replace("T", " ").slice(0, 16);
-                      const [dp, tp] = clean.split(" ");
-                      return (
-                        <>
-                          <span style={{ color: "#1e293b", fontWeight: 600 }}>
-                            {dp}
-                          </span>
-                          <span
-                            style={{
-                              color: "#64748b",
-                              fontSize: 11,
-                              marginLeft: 4,
-                            }}
-                          >
-                            {tp}
-                          </span>
-                        </>
-                      );
-                    };
-                    const fmtL = (v: any, color = "#1e293b") => (
-                      <span style={{ color, fontWeight: 600 }}>
-                        <span
-                          style={{
-                            fontSize: 10,
-                            color: "#94a3b8",
-                            marginRight: 2,
-                          }}
-                        >
-                          L
-                        </span>
-                        {parseFloat(v || 0).toLocaleString("de-DE", {
-                          minimumFractionDigits: 2,
-                        })}
-                      </span>
-                    );
-                    return (
-                      <tr
-                        key={t.apertura_id}
+                      <div
                         style={{
-                          background: estaAbierto
-                            ? "#f0fdf4"
-                            : idx % 2 === 0
-                              ? "#ffffff"
-                              : "#fafafa",
-                          borderBottom: "1px solid #f1f5f9",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          marginBottom: "8px",
                         }}
                       >
-                        {/* Cajero */}
-                        <td style={{ padding: "10px 14px" }}>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "10px",
+                          }}
+                        >
                           <div
                             style={{
+                              width: "36px",
+                              height: "36px",
+                              borderRadius: "50%",
+                              background: "rgba(255,255,255,0.25)",
                               display: "flex",
                               alignItems: "center",
-                              gap: 8,
+                              justifyContent: "center",
+                              fontWeight: 800,
+                              fontSize: "16px",
                             }}
                           >
-                            <span
+                            {(t.nombre_cajero || "?").charAt(0).toUpperCase()}
+                          </div>
+                          <div>
+                            <div
                               style={{
-                                width: 28,
-                                height: 28,
-                                borderRadius: "50%",
-                                background: "#e0e7ff",
-                                color: "#4338ca",
                                 fontWeight: 800,
-                                fontSize: 12,
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                flexShrink: 0,
-                              }}
-                            >
-                              {(t.nombre_cajero || "?").charAt(0).toUpperCase()}
-                            </span>
-                            <span
-                              style={{
-                                fontWeight: 700,
-                                color: "#1e293b",
-                                fontSize: 13,
+                                fontSize: "15px",
                               }}
                             >
                               {t.nombre_cajero}
-                            </span>
+                            </div>
+                            <div
+                              style={{
+                                fontSize: "11px",
+                                opacity: 0.9,
+                                fontWeight: 600,
+                              }}
+                            >
+                              Caja {t.caja}
+                            </div>
                           </div>
-                        </td>
-                        {/* Caja */}
-                        <td style={{ padding: "10px 14px" }}>
-                          <span
+                        </div>
+                        <div
+                          style={{
+                            textAlign: "right",
+                          }}
+                        >
+                          {estaAbierto ? (
+                            <div
+                              style={{
+                                fontSize: "12px",
+                                fontWeight: 700,
+                                background: "rgba(255,255,255,0.3)",
+                                padding: "4px 10px",
+                                borderRadius: "20px",
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              🟢 EN LÍNEA
+                            </div>
+                          ) : (
+                            <div
+                              style={{
+                                fontSize: "12px",
+                                fontWeight: 700,
+                                background: "rgba(255,255,255,0.3)",
+                                padding: "4px 10px",
+                                borderRadius: "20px",
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              ✓ CERRADO
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Card Body */}
+                    <div style={{ padding: "16px" }}>
+                      {/* Fechas */}
+                      <div
+                        style={{
+                          marginBottom: "16px",
+                          paddingBottom: "12px",
+                          borderBottom: "1px solid #e2e8f0",
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontSize: "12px",
+                            fontWeight: 700,
+                            color: "#64748b",
+                            textTransform: "uppercase",
+                            marginBottom: "4px",
+                            letterSpacing: "0.5px",
+                          }}
+                        >
+                          Horario
+                        </div>
+                        <div
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: "1fr 1fr",
+                            gap: "8px",
+                            fontSize: "12px",
+                          }}
+                        >
+                          <div>
+                            <div
+                              style={{
+                                color: "#94a3b8",
+                                fontSize: "11px",
+                                marginBottom: "2px",
+                              }}
+                            >
+                              Apertura
+                            </div>
+                            <div
+                              style={{
+                                color: "#0f172a",
+                                fontWeight: 600,
+                              }}
+                            >
+                              {formatearFecha(t.fecha_apertura)}
+                            </div>
+                          </div>
+                          <div>
+                            <div
+                              style={{
+                                color: "#94a3b8",
+                                fontSize: "11px",
+                                marginBottom: "2px",
+                              }}
+                            >
+                              Cierre
+                            </div>
+                            <div
+                              style={{
+                                color: t.fecha_cierre ? "#0f172a" : "#94a3b8",
+                                fontWeight: 600,
+                              }}
+                            >
+                              {formatearFecha(t.fecha_cierre) || "En línea"}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Montos Principales */}
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "1fr 1fr",
+                          gap: "12px",
+                          marginBottom: "14px",
+                        }}
+                      >
+                        <div
+                          style={{
+                            background: "#f0fdf4",
+                            padding: "10px",
+                            borderRadius: "8px",
+                            border: "1px solid #bbf7d0",
+                          }}
+                        >
+                          <div
                             style={{
-                              background: "#e2e8f0",
-                              color: "#334155",
-                              borderRadius: 6,
-                              padding: "2px 9px",
-                              fontSize: 12,
-                              fontWeight: 600,
+                              fontSize: "11px",
+                              fontWeight: 700,
+                              color: "#3f6319",
+                              textTransform: "uppercase",
+                              marginBottom: "4px",
                             }}
                           >
-                            {t.caja}
-                          </span>
-                        </td>
-                        {/* Apertura */}
-                        <td
-                          style={{ padding: "10px 14px", whiteSpace: "nowrap" }}
-                        >
-                          {fmtDate(t.fecha_apertura)}
-                        </td>
-                        {/* Ef. Neto */}
-                        <td
-                          style={{ padding: "10px 14px", textAlign: "right" }}
-                        >
-                          <span
+                            Efectivo Neto
+                          </div>
+                          <div
                             style={{
-                              background: "#f0fdf4",
-                              border: "1px solid #bbf7d0",
-                              borderRadius: 7,
-                              padding: "3px 9px",
-                              fontWeight: 700,
+                              fontSize: "16px",
+                              fontWeight: 900,
                               color: "#15803d",
-                              fontSize: 13,
                             }}
                           >
                             L{" "}
@@ -3236,47 +3711,32 @@ export default function ResultadosView({
                               "de-DE",
                               { minimumFractionDigits: 2 },
                             )}
-                          </span>
-                        </td>
-                        {/* Tarjeta */}
-                        <td
-                          style={{ padding: "10px 14px", textAlign: "right" }}
+                          </div>
+                        </div>
+                        <div
+                          style={{
+                            background: "#f3f4f6",
+                            padding: "10px",
+                            borderRadius: "8px",
+                            border: "1px solid #d1d5db",
+                          }}
                         >
-                          {fmtL(t.tarjeta, "#1d4ed8")}
-                        </td>
-                        {/* Transferencia */}
-                        <td
-                          style={{ padding: "10px 14px", textAlign: "right" }}
-                        >
-                          {fmtL(t.transferencia, "#6d28d9")}
-                        </td>
-                        {/* $ USD */}
-                        <td
-                          style={{ padding: "10px 14px", textAlign: "right" }}
-                        >
-                          <span
+                          <div
                             style={{
-                              background: "#fffbeb",
-                              border: "1px solid #fde68a",
-                              borderRadius: 7,
-                              padding: "3px 9px",
-                              fontWeight: 600,
-                              color: "#92400e",
-                              fontSize: 13,
+                              fontSize: "11px",
+                              fontWeight: 700,
+                              color: "#374151",
+                              textTransform: "uppercase",
+                              marginBottom: "4px",
                             }}
                           >
-                            $ {parseFloat(t.dolares_usd || 0).toFixed(2)}
-                          </span>
-                        </td>
-                        {/* Total Ventas */}
-                        <td
-                          style={{ padding: "10px 14px", textAlign: "right" }}
-                        >
-                          <span
+                            Total Ventas
+                          </div>
+                          <div
                             style={{
-                              fontWeight: 800,
-                              color: "#0f172a",
-                              fontSize: 14,
+                              fontSize: "16px",
+                              fontWeight: 900,
+                              color: "#1f2937",
                             }}
                           >
                             L{" "}
@@ -3284,252 +3744,640 @@ export default function ResultadosView({
                               "de-DE",
                               { minimumFractionDigits: 2 },
                             )}
-                          </span>
-                        </td>
-                        {/* Gastos */}
-                        <td
-                          style={{ padding: "10px 14px", textAlign: "right" }}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Métodos de Pago */}
+                      <div
+                        style={{
+                          background: "#f8fafc",
+                          padding: "12px",
+                          borderRadius: "8px",
+                          marginBottom: "12px",
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontSize: "11px",
+                            fontWeight: 700,
+                            color: "#64748b",
+                            textTransform: "uppercase",
+                            marginBottom: "8px",
+                            letterSpacing: "0.5px",
+                          }}
                         >
-                          <span style={{ color: "#dc2626", fontWeight: 600 }}>
+                          Métodos de Pago
+                        </div>
+                        <div
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: "1fr 1fr 1fr",
+                            gap: "8px",
+                            fontSize: "12px",
+                          }}
+                        >
+                          <div>
+                            <div
+                              style={{
+                                color: "#64748b",
+                                fontSize: "10px",
+                                marginBottom: "2px",
+                              }}
+                            >
+                              💳 Tarjeta
+                            </div>
+                            <div
+                              style={{
+                                color: "#1d4ed8",
+                                fontWeight: 700,
+                              }}
+                            >
+                              L{" "}
+                              {parseFloat(t.tarjeta || 0).toLocaleString(
+                                "de-DE",
+                                { minimumFractionDigits: 2 },
+                              )}
+                            </div>
+                          </div>
+                          <div>
+                            <div
+                              style={{
+                                color: "#64748b",
+                                fontSize: "10px",
+                                marginBottom: "2px",
+                              }}
+                            >
+                              🏦 Transf.
+                            </div>
+                            <div
+                              style={{
+                                color: "#6d28d9",
+                                fontWeight: 700,
+                              }}
+                            >
+                              L{" "}
+                              {parseFloat(t.transferencia || 0).toLocaleString(
+                                "de-DE",
+                                { minimumFractionDigits: 2 },
+                              )}
+                            </div>
+                          </div>
+                          <div>
+                            <div
+                              style={{
+                                color: "#64748b",
+                                fontSize: "10px",
+                                marginBottom: "2px",
+                              }}
+                            >
+                              💱 USD
+                            </div>
+                            <div
+                              style={{
+                                color: "#92400e",
+                                fontWeight: 700,
+                              }}
+                            >
+                              $ {parseFloat(t.dolares_usd || 0).toFixed(2)}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Productos y Gastos */}
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "1fr 1fr 1fr",
+                          gap: "8px",
+                          paddingTop: "12px",
+                          borderTop: "1px solid #e2e8f0",
+                        }}
+                      >
+                        <div
+                          style={{
+                            textAlign: "center",
+                            paddingTop: "8px",
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: "10px",
+                              fontWeight: 700,
+                              color: "#64748b",
+                              textTransform: "uppercase",
+                              marginBottom: "4px",
+                            }}
+                          >
+                            🍽 Platillos
+                          </div>
+                          <div
+                            style={{
+                              fontSize: "18px",
+                              fontWeight: 800,
+                              color: "#166534",
+                              background: "#f0fdf4",
+                              padding: "4px 8px",
+                              borderRadius: "6px",
+                              display: "inline-block",
+                            }}
+                          >
+                            {Math.round(parseFloat(t.total_platillos || 0))}
+                          </div>
+                        </div>
+                        <div
+                          style={{
+                            textAlign: "center",
+                            paddingTop: "8px",
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: "10px",
+                              fontWeight: 700,
+                              color: "#64748b",
+                              textTransform: "uppercase",
+                              marginBottom: "4px",
+                            }}
+                          >
+                            🥤 Bebidas
+                          </div>
+                          <div
+                            style={{
+                              fontSize: "18px",
+                              fontWeight: 800,
+                              color: "#1e40af",
+                              background: "#eff6ff",
+                              padding: "4px 8px",
+                              borderRadius: "6px",
+                              display: "inline-block",
+                            }}
+                          >
+                            {Math.round(parseFloat(t.total_bebidas || 0))}
+                          </div>
+                        </div>
+                        <div
+                          style={{
+                            textAlign: "center",
+                            paddingTop: "8px",
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: "10px",
+                              fontWeight: 700,
+                              color: "#64748b",
+                              textTransform: "uppercase",
+                              marginBottom: "4px",
+                            }}
+                          >
+                            💸 Gastos
+                          </div>
+                          <div
+                            style={{
+                              fontSize: "18px",
+                              fontWeight: 800,
+                              color: "#dc2626",
+                              background: "#fee2e2",
+                              padding: "4px 8px",
+                              borderRadius: "6px",
+                              display: "inline-block",
+                            }}
+                          >
                             L{" "}
                             {parseFloat(t.gastos || 0).toLocaleString("de-DE", {
                               minimumFractionDigits: 2,
                             })}
-                          </span>
-                        </td>
-                        {/* Platillos */}
-                        <td
-                          style={{ padding: "10px 14px", textAlign: "center" }}
-                        >
-                          <span
-                            style={{
-                              background: "#f0fdf4",
-                              color: "#166534",
-                              borderRadius: 20,
-                              padding: "3px 11px",
-                              fontWeight: 700,
-                              fontSize: 13,
-                            }}
-                          >
-                            {Math.round(parseFloat(t.total_platillos || 0))}
-                          </span>
-                        </td>
-                        {/* Bebidas */}
-                        <td
-                          style={{ padding: "10px 14px", textAlign: "center" }}
-                        >
-                          <span
-                            style={{
-                              background: "#eff6ff",
-                              color: "#1e40af",
-                              borderRadius: 20,
-                              padding: "3px 11px",
-                              fontWeight: 700,
-                              fontSize: 13,
-                            }}
-                          >
-                            {Math.round(parseFloat(t.total_bebidas || 0))}
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* KPIs */}
-        <div className="kpi-grid">
-          <div className="kpi-card kpi-success">
-            <div className="kpi-value">
-              L{" "}
-              {totalVentas.toLocaleString("de-DE", {
-                minimumFractionDigits: 2,
-              })}
-            </div>
-            <div className="kpi-label">Total Ventas</div>
-          </div>
-          <div className="kpi-card kpi-danger">
-            <div className="kpi-value">
-              L{" "}
-              {totalGastos.toLocaleString("de-DE", {
-                minimumFractionDigits: 2,
-              })}
-            </div>
-            <div className="kpi-label">Total Gastos</div>
-          </div>
-          <div className="kpi-card kpi-info">
-            <div className="kpi-value">
-              L {balance.toLocaleString("de-DE", { minimumFractionDigits: 2 })}
-            </div>
-            <div className="kpi-label">
-              {balance >= 0 ? "✅ Ganancia" : "❌ Pérdida"}
-            </div>
-          </div>
-          <div className="kpi-card kpi-success">
-            <div className="kpi-value">{facturasCount}</div>
-            <div className="kpi-label">Facturas</div>
-            {facturaInicial && facturaFinal && (
-              <div
-                style={{
-                  marginTop: 10,
-                  fontSize: "0.75rem",
-                  color: "#64748b",
-                  lineHeight: 1.6,
-                }}
-              >
-                <div>
-                  De:{" "}
-                  <strong style={{ color: "#10b981" }}>
-                    #{facturaInicial}
-                  </strong>
-                </div>
-                <div>
-                  A:{" "}
-                  <strong style={{ color: "#10b981" }}>#{facturaFinal}</strong>
-                </div>
-              </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
             )}
           </div>
-          <div className="kpi-card kpi-danger">
-            <div className="kpi-value">{gastosCount}</div>
-            <div className="kpi-label">Gastos</div>
-          </div>
-          {/* KPIs de pagos por tipo */}
-          <div className="kpi-card" style={{ borderTop: "4px solid #10b981" }}>
-            <div className="kpi-value" style={{ color: "#10b981" }}>
-              L{" "}
-              {pagosTotales.efectivo.toLocaleString("de-DE", {
-                minimumFractionDigits: 2,
-              })}
-            </div>
-            <div className="kpi-label">💵 Efectivo</div>
-          </div>
-          <div className="kpi-card" style={{ borderTop: "4px solid #3b82f6" }}>
-            <div className="kpi-value" style={{ color: "#3b82f6" }}>
-              L{" "}
-              {pagosTotales.tarjeta.toLocaleString("de-DE", {
-                minimumFractionDigits: 2,
-              })}
-            </div>
-            <div className="kpi-label">💳 Tarjeta</div>
-          </div>
-          <div className="kpi-card" style={{ borderTop: "4px solid #8b5cf6" }}>
-            <div className="kpi-value" style={{ color: "#8b5cf6" }}>
-              L{" "}
-              {pagosTotales.transferencia.toLocaleString("de-DE", {
-                minimumFractionDigits: 2,
-              })}
-            </div>
-            <div className="kpi-label">🏦 Transferencia</div>
-          </div>
-          <div className="kpi-card" style={{ borderTop: "4px solid #f59e0b" }}>
-            <div
-              className="kpi-value"
-              style={{ color: "#f59e0b", fontSize: "1.6rem" }}
-            >
-              ${" "}
-              {pagosTotales.dolares_usd.toLocaleString("de-DE", {
-                minimumFractionDigits: 2,
-              })}
-              {pagosTotales.dolares_lps > 0 && (
-                <div
-                  style={{ fontSize: "1rem", color: "#64748b", marginTop: 2 }}
-                >
-                  ≈ L{" "}
-                  {pagosTotales.dolares_lps.toLocaleString("de-DE", {
-                    minimumFractionDigits: 2,
-                  })}
-                </div>
-              )}
-            </div>
-            <div className="kpi-label">💱 Dólares</div>
-          </div>
         </div>
 
-        {/* Accesos rápidos */}
-        <div className="content-grid">
-          {/* Botón acceso rápido a Facturas Emitidas */}
-          <div className="table-container">
-            <div
-              className="table-card"
+        {/* INDICADORES FINANCIEROS - Resumen Analítico */}
+        <div
+          style={{
+            marginBottom: "24px",
+            borderRadius: "12px",
+            overflow: "hidden",
+          }}
+        >
+          <div
+            style={{
+              background: "linear-gradient(135deg, #f5f7fa 0%, #ffffff 100%)",
+              padding: "20px",
+              borderTop: "3px solid #0b4f9a",
+              borderRadius: "12px 12px 0 0",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              borderBottom: "1px solid #e2e8f0",
+            }}
+          >
+            <h3
               style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "center",
-                padding: 32,
-                gap: 14,
+                margin: 0,
+                fontSize: "16px",
+                fontWeight: 900,
+                color: "#0f172a",
+                letterSpacing: "0.5px",
+              }}
+            >
+              📊 Indicadores Clave del Período
+            </h3>
+          </div>
+
+          {/* Grid de KPIs */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+              gap: "1px",
+              background: "#e2e8f0",
+              borderRadius: "0 0 12px 12px",
+              overflow: "hidden",
+              boxShadow: "0 2px 12px rgba(0, 0, 0, 0.06)",
+            }}
+          >
+            {/* KPI 1: Total Ventas */}
+            <div
+              style={{
+                background: "#fff",
+                padding: "16px",
                 textAlign: "center",
               }}
             >
-              <div style={{ fontSize: 36 }}>📄</div>
-              <div style={{ fontWeight: 700, fontSize: 17 }}>
-                Facturas Emitidas
+              <div
+                style={{
+                  fontSize: "11px",
+                  fontWeight: 700,
+                  color: "#64748b",
+                  textTransform: "uppercase",
+                  marginBottom: "6px",
+                  letterSpacing: "0.5px",
+                }}
+              >
+                💰 Ventas
               </div>
               <div
-                style={{ fontSize: 13, color: "var(--text-secondary,#64748b)" }}
+                style={{
+                  fontSize: "22px",
+                  fontWeight: 900,
+                  color: "#16a34a",
+                  marginBottom: "4px",
+                }}
               >
-                Ver el detalle completo de facturas por método de pago con
-                totales y neto
+                L{" "}
+                {totalVentas.toLocaleString("de-DE", {
+                  minimumFractionDigits: 2,
+                })}
               </div>
-              {onVerFacturasEmitidas && (
-                <button
-                  className="btn-primary"
-                  onClick={onVerFacturasEmitidas}
+            </div>
+
+            {/* KPI 2: Total Gastos */}
+            <div
+              style={{
+                background: "#fff",
+                padding: "16px",
+                textAlign: "center",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "11px",
+                  fontWeight: 700,
+                  color: "#64748b",
+                  textTransform: "uppercase",
+                  marginBottom: "6px",
+                  letterSpacing: "0.5px",
+                }}
+              >
+                💸 Gastos
+              </div>
+              <div
+                style={{
+                  fontSize: "22px",
+                  fontWeight: 900,
+                  color: "#dc2626",
+                  marginBottom: "4px",
+                }}
+              >
+                L{" "}
+                {totalGastos.toLocaleString("de-DE", {
+                  minimumFractionDigits: 2,
+                })}
+              </div>
+            </div>
+
+            {/* KPI 3: Balance */}
+            <div
+              style={{
+                background: balance >= 0 ? "#f0fdf4" : "#fee2e2",
+                padding: "16px",
+                textAlign: "center",
+                borderLeft:
+                  balance >= 0 ? "3px solid #16a34a" : "3px solid #dc2626",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "11px",
+                  fontWeight: 700,
+                  color: "#64748b",
+                  textTransform: "uppercase",
+                  marginBottom: "6px",
+                  letterSpacing: "0.5px",
+                }}
+              >
+                {balance >= 0 ? "✅ Ganancia" : "❌ Pérdida"}
+              </div>
+              <div
+                style={{
+                  fontSize: "22px",
+                  fontWeight: 900,
+                  color: balance >= 0 ? "#16a34a" : "#dc2626",
+                  marginBottom: "4px",
+                }}
+              >
+                L{" "}
+                {balance.toLocaleString("de-DE", { minimumFractionDigits: 2 })}
+              </div>
+            </div>
+
+            {/* KPI 4: Facturas Conteo */}
+            <div
+              style={{
+                background: "#fff",
+                padding: "16px",
+                textAlign: "center",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "11px",
+                  fontWeight: 700,
+                  color: "#64748b",
+                  textTransform: "uppercase",
+                  marginBottom: "6px",
+                  letterSpacing: "0.5px",
+                }}
+              >
+                🧾 Facturas
+              </div>
+              <div
+                style={{
+                  fontSize: "22px",
+                  fontWeight: 900,
+                  color: "#1d4ed8",
+                  marginBottom: "4px",
+                }}
+              >
+                {facturasCount}
+              </div>
+              {facturaInicial && facturaFinal && (
+                <div
                   style={{
-                    padding: "10px 24px",
-                    borderRadius: 8,
-                    fontWeight: 700,
-                    fontSize: 14,
+                    fontSize: "10px",
+                    color: "#94a3b8",
+                    marginTop: "6px",
+                    lineHeight: "1.4",
                   }}
                 >
-                  📄 Ver Facturas Emitidas
+                  <div>
+                    #{facturaInicial} → #{facturaFinal}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* KPI 5: Gastos Conteo */}
+            <div
+              style={{
+                background: "#fff",
+                padding: "16px",
+                textAlign: "center",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "11px",
+                  fontWeight: 700,
+                  color: "#64748b",
+                  textTransform: "uppercase",
+                  marginBottom: "6px",
+                  letterSpacing: "0.5px",
+                }}
+              >
+                📝 Registros
+              </div>
+              <div
+                style={{
+                  fontSize: "22px",
+                  fontWeight: 900,
+                  color: "#92400e",
+                  marginBottom: "4px",
+                }}
+              >
+                {gastosCount}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ACCESOS RÁPIDOS - Secciones Relacionadas */}
+        <div
+          style={{
+            marginBottom: "24px",
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+            gap: "16px",
+          }}
+        >
+          {/* Card: Facturas Emitidas */}
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: "12px",
+              overflow: "hidden",
+              boxShadow: "0 4px 12px rgba(0, 0, 0, 0.08)",
+              border: "1px solid #e2e8f0",
+              transition: "all 0.25s",
+            }}
+            onMouseEnter={(e) => {
+              const el = e.currentTarget as HTMLDivElement;
+              el.style.boxShadow = "0 8px 24px rgba(0, 0, 0, 0.12)";
+              el.style.transform = "translateY(-3px)";
+            }}
+            onMouseLeave={(e) => {
+              const el = e.currentTarget as HTMLDivElement;
+              el.style.boxShadow = "0 4px 12px rgba(0, 0, 0, 0.08)";
+              el.style.transform = "translateY(0)";
+            }}
+          >
+            {/* Header */}
+            <div
+              style={{
+                background: "linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)",
+                color: "#fff",
+                padding: "20px",
+                display: "flex",
+                alignItems: "center",
+                gap: "12px",
+              }}
+            >
+              <div style={{ fontSize: "28px" }}>📄</div>
+              <div>
+                <h3
+                  style={{
+                    margin: "0 0 4px 0",
+                    fontSize: "15px",
+                    fontWeight: 900,
+                  }}
+                >
+                  Facturas Emitidas
+                </h3>
+                <p style={{ margin: 0, fontSize: "12px", opacity: 0.9 }}>
+                  Detalle de facturas
+                </p>
+              </div>
+            </div>
+            {/* Body */}
+            <div style={{ padding: "16px" }}>
+              <p
+                style={{
+                  margin: "0 0 12px 0",
+                  fontSize: "13px",
+                  color: "#64748b",
+                  lineHeight: 1.5,
+                }}
+              >
+                Ver listado completo de facturas emitidas con métodos de pago,
+                totales y detalles.
+              </p>
+              {onVerFacturasEmitidas && (
+                <button
+                  onClick={onVerFacturasEmitidas}
+                  style={{
+                    width: "100%",
+                    padding: "10px 14px",
+                    background:
+                      "linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)",
+                    color: "#fff",
+                    border: "none",
+                    borderRadius: "6px",
+                    fontWeight: 700,
+                    fontSize: "13px",
+                    cursor: "pointer",
+                    transition: "all 0.2s",
+                  }}
+                  onMouseEnter={(e) => {
+                    (e.target as HTMLButtonElement).style.transform =
+                      "scale(1.02)";
+                  }}
+                  onMouseLeave={(e) => {
+                    (e.target as HTMLButtonElement).style.transform =
+                      "scale(1)";
+                  }}
+                >
+                  📄 Abrir Facturas
                 </button>
               )}
             </div>
           </div>
 
-          {/* Botón acceso rápido a Gastos */}
-          <div className="table-container">
+          {/* Card: Gastos del Período */}
+          <div
+            style={{
+              background: "#fff",
+              borderRadius: "12px",
+              overflow: "hidden",
+              boxShadow: "0 4px 12px rgba(0, 0, 0, 0.08)",
+              border: "1px solid #e2e8f0",
+              transition: "all 0.25s",
+            }}
+            onMouseEnter={(e) => {
+              const el = e.currentTarget as HTMLDivElement;
+              el.style.boxShadow = "0 8px 24px rgba(0, 0, 0, 0.12)";
+              el.style.transform = "translateY(-3px)";
+            }}
+            onMouseLeave={(e) => {
+              const el = e.currentTarget as HTMLDivElement;
+              el.style.boxShadow = "0 4px 12px rgba(0, 0, 0, 0.08)";
+              el.style.transform = "translateY(0)";
+            }}
+          >
+            {/* Header */}
             <div
-              className="table-card"
               style={{
+                background: "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)",
+                color: "#fff",
+                padding: "20px",
                 display: "flex",
-                flexDirection: "column",
                 alignItems: "center",
-                justifyContent: "center",
-                padding: 32,
-                gap: 14,
-                textAlign: "center",
+                gap: "12px",
               }}
             >
-              <div style={{ fontSize: 36 }}>💸</div>
-              <div style={{ fontWeight: 700, fontSize: 17 }}>
-                Gastos del Período
+              <div style={{ fontSize: "28px" }}>💸</div>
+              <div>
+                <h3
+                  style={{
+                    margin: "0 0 4px 0",
+                    fontSize: "15px",
+                    fontWeight: 900,
+                  }}
+                >
+                  Gastos del Período
+                </h3>
+                <p style={{ margin: 0, fontSize: "12px", opacity: 0.9 }}>
+                  Registro y análisis
+                </p>
               </div>
-              <div
-                style={{ fontSize: 13, color: "var(--text-secondary,#64748b)" }}
+            </div>
+            {/* Body */}
+            <div style={{ padding: "16px" }}>
+              <p
+                style={{
+                  margin: "0 0 12px 0",
+                  fontSize: "13px",
+                  color: "#64748b",
+                  lineHeight: 1.5,
+                }}
               >
-                Consultar y registrar gastos filtrados por intervalo de fechas
-              </div>
+                Consultar y registrar gastos operacionales del período
+                seleccionado.
+              </p>
               {onVerGastos && (
                 <button
                   onClick={onVerGastos}
                   style={{
-                    padding: "10px 24px",
-                    borderRadius: 8,
-                    fontWeight: 700,
-                    fontSize: 14,
-                    background: "#ef4444",
+                    width: "100%",
+                    padding: "10px 14px",
+                    background:
+                      "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)",
                     color: "#fff",
                     border: "none",
+                    borderRadius: "6px",
+                    fontWeight: 700,
+                    fontSize: "13px",
                     cursor: "pointer",
+                    transition: "all 0.2s",
+                  }}
+                  onMouseEnter={(e) => {
+                    (e.target as HTMLButtonElement).style.transform =
+                      "scale(1.02)";
+                  }}
+                  onMouseLeave={(e) => {
+                    (e.target as HTMLButtonElement).style.transform =
+                      "scale(1)";
                   }}
                 >
-                  💸 Ver Gastos
+                  💸 Abrir Gastos
                 </button>
               )}
             </div>
