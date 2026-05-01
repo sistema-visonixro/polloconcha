@@ -5,38 +5,43 @@
 
 CREATE OR REPLACE VIEW public.v_resumen_turnos AS
 
--- 1. Cada apertura como inicio de turno
-WITH aperturas AS (
+-- 1) Base de turnos desde la misma tabla cierres
+--    Nuevo esquema: fecha_apertura / fecha_cierre
+--    Compatibilidad: fallback a fecha si aún hay datos antiguos
+WITH turnos AS (
   SELECT
-    id            AS apertura_id,
-    cajero_id,
-    cajero        AS nombre_cajero,
-    caja,
-    fecha         AS fecha_apertura
-  FROM public.cierres
-  WHERE estado = 'APERTURA'
-),
-
--- 2. Para cada apertura, buscar el primer CIERRE posterior del mismo cajero+caja
-turnos AS (
-  SELECT
-    a.apertura_id,
-    a.cajero_id,
-    a.nombre_cajero,
-    a.caja,
-    a.fecha_apertura,
+    c.id                                              AS apertura_id,
+    c.cajero_id,
+    c.cajero                                          AS nombre_cajero,
+    c.caja,
+    COALESCE(c.fecha_apertura, c.fecha)              AS fecha_apertura,
     COALESCE(
+      c.fecha_cierre,
+      CASE
+        WHEN c.estado = 'CIERRE' OR c.tipo_registro = 'cierre' THEN c.fecha
+        ELSE NULL
+      END,
       (
-        SELECT MIN(c.fecha)
-        FROM public.cierres c
-        WHERE c.cajero_id = a.cajero_id
-          AND c.caja      = a.caja
-          AND c.estado    = 'CIERRE'
-          AND c.fecha     > a.fecha_apertura
+        SELECT MIN(COALESCE(c2.fecha_cierre, c2.fecha))
+        FROM public.cierres c2
+        WHERE c2.cajero_id = c.cajero_id
+          AND c2.caja      = c.caja
+          AND (c2.estado = 'CIERRE' OR c2.tipo_registro = 'cierre')
+          AND COALESCE(c2.fecha_cierre, c2.fecha) > COALESCE(c.fecha_apertura, c.fecha)
       ),
       NOW()
-    ) AS fecha_cierre
-  FROM aperturas a
+    )                                                 AS fecha_cierre
+  FROM public.cierres c
+  WHERE c.cajero_id IS NOT NULL
+    AND c.caja IS NOT NULL
+    AND COALESCE(c.fecha_apertura, c.fecha) IS NOT NULL
+    AND (
+      c.estado = 'APERTURA'
+      OR c.estado = 'CIERRE'
+      OR c.tipo_registro = 'apertura'
+      OR c.tipo_registro = 'cierre'
+      OR c.fecha_apertura IS NOT NULL
+    )
 ),
 
 -- 3. Sumar pagos de ventas del turno (excluye CREDITO, incluye DEVOLUCION con negativos)

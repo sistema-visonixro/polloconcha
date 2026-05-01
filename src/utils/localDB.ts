@@ -885,8 +885,18 @@ export async function calcularResumenTurno(
     if (!apertura) return null;
 
     // Determinar rango de tiempo del turno
-    const fechaAperturaStr = apertura.fecha ?? new Date().toISOString();
+    const fechaAperturaStr =
+      apertura.fecha_apertura ?? apertura.fecha ?? new Date().toISOString();
     const tsApertura = new Date(fechaAperturaStr).getTime();
+
+    const fechaCierrePropia =
+      apertura.fecha_cierre ??
+      (apertura.estado === "CIERRE" || apertura.tipo_registro === "cierre"
+        ? (apertura.fecha ?? null)
+        : null);
+    const tsCierrePropia = fechaCierrePropia
+      ? new Date(fechaCierrePropia).getTime()
+      : NaN;
 
     // Buscar el cierre posterior del mismo cajero/caja
     const todosLosCierres = await getByIndex<any>(
@@ -897,16 +907,29 @@ export async function calcularResumenTurno(
     const cierrePost = todosLosCierres
       .filter(
         (c) =>
+          c.id !== apertura.id &&
           (c.estado === "CIERRE" || c.tipo_registro === "cierre") &&
           c.caja === apertura.caja &&
-          new Date(c.fecha ?? 0).getTime() > tsApertura,
+          new Date(c.fecha_cierre ?? c.fecha ?? 0).getTime() > tsApertura,
       )
       .sort(
-        (a, b) => new Date(a.fecha).getTime() - new Date(b.fecha).getTime(),
+        (a, b) =>
+          new Date(a.fecha_cierre ?? a.fecha ?? 0).getTime() -
+          new Date(b.fecha_cierre ?? b.fecha ?? 0).getTime(),
       )[0];
-    const tsCierre = cierrePost
-      ? new Date(cierrePost.fecha).getTime()
-      : Date.now();
+
+    const fechaCierreStr =
+      Number.isFinite(tsCierrePropia) && tsCierrePropia > tsApertura
+        ? fechaCierrePropia
+        : (cierrePost?.fecha_cierre ?? cierrePost?.fecha ?? null);
+
+    const tsCierreParsed = fechaCierreStr
+      ? new Date(fechaCierreStr).getTime()
+      : NaN;
+    const tsCierre =
+      Number.isFinite(tsCierreParsed) && tsCierreParsed > tsApertura
+        ? tsCierreParsed
+        : Date.now();
 
     const todasLasVentas = await getByIndex<any>(
       STORE.VENTAS,
@@ -983,8 +1006,8 @@ export async function calcularResumenTurno(
       cajero_id: cajeroId,
       nombre_cajero: apertura.cajero ?? "",
       caja: apertura.caja ?? "",
-      fecha_apertura: apertura.fecha ?? "",
-      fecha_cierre: cierrePost?.fecha ?? null,
+      fecha_apertura: fechaAperturaStr,
+      fecha_cierre: fechaCierreStr,
       efectivo_bruto: efectivoBruto,
       efectivo_neto: efectivoNeto,
       cambio_devuelto: cambioTotal,
@@ -1030,12 +1053,23 @@ export async function listarResumenesTurnos(
 ): Promise<ResumenTurno[]> {
   const cierres = await getAll<any>(STORE.CIERRES);
   const aperturas = cierres
-    .filter(
-      (c) => c.estado === "APERTURA" && (!cajeroId || c.cajero_id === cajeroId),
-    )
+    .filter((c) => {
+      if (cajeroId && c.cajero_id !== cajeroId) return false;
+      const fechaApertura = c.fecha_apertura ?? c.fecha;
+      if (!fechaApertura) return false;
+
+      return (
+        c.estado === "APERTURA" ||
+        c.estado === "CIERRE" ||
+        c.tipo_registro === "apertura" ||
+        c.tipo_registro === "cierre" ||
+        Boolean(c.fecha_apertura)
+      );
+    })
     .sort(
       (a, b) =>
-        new Date(b.fecha ?? 0).getTime() - new Date(a.fecha ?? 0).getTime(),
+        new Date(b.fecha_apertura ?? b.fecha ?? 0).getTime() -
+        new Date(a.fecha_apertura ?? a.fecha ?? 0).getTime(),
     );
 
   const resumenes = await Promise.all(

@@ -77,7 +77,9 @@ export default function CierresAdminView({
       if (!error) {
         const rows = data || [];
         const filtrados = rows.filter((row: any) => {
-          const fecha = obtenerFechaLocalYMD(row?.fecha);
+          const fecha = obtenerFechaLocalYMD(
+            row?.fecha_apertura || row?.fecha || row?.fecha_cierre,
+          );
           if (!fecha) return false;
           if (fechaDesde && fecha < fechaDesde) return false;
           if (fechaHasta && fecha > fechaHasta) return false;
@@ -131,8 +133,12 @@ export default function CierresAdminView({
   const aperturasFiltradas = cierres.filter(
     (c) =>
       c.tipo_registro === "apertura" &&
-      (fechaDesde ? obtenerFechaLocalYMD(c.fecha) >= fechaDesde : true) &&
-      (fechaHasta ? obtenerFechaLocalYMD(c.fecha) <= fechaHasta : true),
+      (fechaDesde
+        ? obtenerFechaLocalYMD(c.fecha_apertura || c.fecha) >= fechaDesde
+        : true) &&
+      (fechaHasta
+        ? obtenerFechaLocalYMD(c.fecha_apertura || c.fecha) <= fechaHasta
+        : true),
   );
 
   const cajasAbiertasList = aperturasFiltradas.filter((ap) => {
@@ -206,6 +212,7 @@ export default function CierresAdminView({
         transferencias_dia: valoresCierre.transferenciasDia,
         diferencia: valoresCierre.diferencia,
         observacion: valoresCierre.observacion,
+        fecha_cierre: new Date().toISOString(),
       };
 
       const { error } = await supabase
@@ -250,7 +257,11 @@ export default function CierresAdminView({
       // UPDATE: cambiar la misma fila a apertura
       const { error } = await supabase
         .from("cierres")
-        .update({ estado: "APERTURA", tipo_registro: "apertura" })
+        .update({
+          estado: "APERTURA",
+          tipo_registro: "apertura",
+          fecha_cierre: null,
+        })
         .eq("id", row.id);
       if (!error) {
         await cargarCierres();
@@ -1313,8 +1324,11 @@ export default function CierresAdminView({
           <div className="cierres-list">
             {cierresFiltrados.map((c, idx) => {
               const tipo = c.tipo_registro || "";
-              const fecha = c.fecha
-                ? c.fecha.slice(0, 16).replace("T", " ")
+              const fechaApertura = c.fecha_apertura || c.fecha;
+              const fechaCierre =
+                c.fecha_cierre || (tipo === "cierre" ? c.fecha : "");
+              const fecha = fechaApertura
+                ? fechaApertura.slice(0, 16).replace("T", " ")
                 : "—";
               const aperturaCerrada =
                 tipo === "apertura" ? aperturaTieneCierre(c, cierres) : false;
@@ -1343,7 +1357,12 @@ export default function CierresAdminView({
                     >
                       {tipo === "apertura" ? "🟢 Apertura" : "🔒 Cierre"}
                     </span>
-                    <span className="cierre-fecha">{fecha}</span>
+                    <span className="cierre-fecha">Apertura: {fecha}</span>
+                    {fechaCierre && (
+                      <span className="cierre-fecha" style={{ opacity: 0.85 }}>
+                        Cierre: {fechaCierre.slice(0, 16).replace("T", " ")}
+                      </span>
+                    )}
                   </div>
 
                   {/* Cuerpo: campos clave */}

@@ -1,6 +1,9 @@
 import { useState, useEffect } from "react";
 import { supabase } from "./supabaseClient";
-import { formatToHondurasLocal, compareTurnoRecordsByRecency } from "./utils/fechas";
+import {
+  formatToHondurasLocal,
+  compareTurnoRecordsByRecency,
+} from "./utils/fechas";
 import { useDatosNegocio } from "./useDatosNegocio";
 import {
   calcularResumenTurno,
@@ -9,6 +12,7 @@ import {
   getAll,
   STORE,
   getPrecioDolarLocal,
+  sincronizarDiaActual,
 } from "./utils/localDB";
 import {
   limpiarAperturaCache,
@@ -47,7 +51,14 @@ export default function RegistroCierreView({
   const [tarjetaSistema, setTarjetaSistema] = useState(0);
   const [transferenciasSistema, setTransferenciasSistema] = useState(0);
   const [dolaresSistema, setDolaresSistema] = useState(0);
+  const [gastosSistema, setGastosSistema] = useState(0);
+  const [totalVentasSistema, setTotalVentasSistema] = useState(0);
+  const [sincronizando, setSincronizando] = useState(false);
+  const [ultimaSync, setUltimaSync] = useState<Date | null>(null);
+  const [syncError, setSyncError] = useState("");
   const [guardando, setGuardando] = useState(false);
+  const [fechaAperturaSistema, setFechaAperturaSistema] = useState<string>("");
+  const [precioDolarActual, setPrecioDolarActual] = useState(0);
 
   // Cargar valores del sistema al montar la vista
   useEffect(() => {
@@ -55,8 +66,31 @@ export default function RegistroCierreView({
     async function cargarResumen() {
       if (!usuarioActual || !usuarioActual.id || !caja) return;
       setLoading(true);
+      setSyncError("");
       try {
+        // Primero sincronizar ventas y gastos del día desde Supabase
+        if (navigator.onLine) {
+          setSincronizando(true);
+          try {
+            await sincronizarDiaActual(usuarioActual.id);
+            setUltimaSync(new Date());
+          } catch (syncErr) {
+            console.warn(
+              "[CierreCaja] No se pudo sincronizar con servidor:",
+              syncErr,
+            );
+            setSyncError(
+              "No se pudo conectar al servidor. Los datos pueden ser del caché local.",
+            );
+          } finally {
+            setSincronizando(false);
+          }
+        } else {
+          setSyncError("Sin conexión. Mostrando datos del caché local.");
+        }
         await obtenerValoresAutomaticos();
+        const tasa = await getPrecioDolarLocal();
+        setPrecioDolarActual(Number(tasa) || 0);
       } catch (err) {
         console.error("Error cargando resumen:", err);
       } finally {
@@ -79,6 +113,7 @@ export default function RegistroCierreView({
       setTarjetaSistema(0);
       setTransferenciasSistema(0);
       setDolaresSistema(0);
+      setFechaAperturaSistema("");
       return {
         fondoFijoDia: 0,
         efectivoDia: 0,
@@ -127,6 +162,10 @@ export default function RegistroCierreView({
     setTarjetaSistema(tarjetaDia);
     setTransferenciasSistema(transferenciasDia);
     setDolaresSistema(dolaresDia);
+    setGastosSistema(gastosDia);
+    setTotalVentasSistema(totalVentasDia ?? 0);
+    const fa = aperturaActual.fecha_apertura ?? aperturaActual.fecha ?? "";
+    setFechaAperturaSistema(fa);
 
     return {
       fondoFijoDia,
@@ -138,7 +177,7 @@ export default function RegistroCierreView({
       platillosDia,
       bebidasDia,
       totalVentasDia,
-      fechaApertura: aperturaActual.fecha,
+      fechaApertura: aperturaActual.fecha_apertura ?? aperturaActual.fecha,
     };
   }
 
@@ -342,6 +381,8 @@ export default function RegistroCierreView({
         dolares_dia: number;
         diferencia: number;
         observacion: string;
+        fecha_apertura?: string;
+        fecha_cierre?: string;
       };
 
       let registro: Registro;
@@ -367,6 +408,8 @@ export default function RegistroCierreView({
         dolares_dia: dolaresDia,
         diferencia,
         observacion,
+        fecha_apertura: fechaApertura || undefined,
+        fecha_cierre: formatToHondurasLocal(),
       };
 
       // ── GUARDAR CIERRE: IDB primero, Supabase solo si hay conexión ──
@@ -388,9 +431,8 @@ export default function RegistroCierreView({
                 (c: any) =>
                   c.cajero_id === usuarioActual?.id && c.estado === "APERTURA",
               )
-              .sort(
-                (a: any, b: any) =>
-                  compareTurnoRecordsByRecency(a, b),
+              .sort((a: any, b: any) =>
+                compareTurnoRecordsByRecency(a, b),
               )[0] ?? null;
         }
 
@@ -399,6 +441,8 @@ export default function RegistroCierreView({
             ...aperturaIdb,
             tipo_registro: "cierre",
             fecha: registro.fecha,
+            fecha_apertura: aperturaIdb.fecha_apertura ?? aperturaIdb.fecha,
+            fecha_cierre: registro.fecha_cierre ?? registro.fecha,
             fondo_fijo_registrado: registro.fondo_fijo_registrado,
             fondo_fijo: registro.fondo_fijo,
             efectivo_registrado: registro.efectivo_registrado,
@@ -440,7 +484,7 @@ export default function RegistroCierreView({
           // Buscar apertura activa en Supabase
           const { data: aperturaDelDia, error: errAp } = await supabase
             .from("cierres")
-            .select("id")
+            .select("id, fecha_apertura, fecha")
             .eq("cajero_id", usuarioActual?.id)
             .eq("caja", caja)
             .eq("estado", "APERTURA")
@@ -456,6 +500,9 @@ export default function RegistroCierreView({
               .update({
                 tipo_registro: "cierre",
                 fecha: registro.fecha,
+                fecha_apertura:
+                  aperturaDelDia.fecha_apertura ?? aperturaDelDia.fecha,
+                fecha_cierre: registro.fecha_cierre ?? registro.fecha,
                 fondo_fijo_registrado: registro.fondo_fijo_registrado,
                 fondo_fijo: registro.fondo_fijo,
                 efectivo_registrado: registro.efectivo_registrado,
@@ -478,11 +525,16 @@ export default function RegistroCierreView({
               await upsertOne(STORE.CIERRES, {
                 ...registro,
                 id: aperturaDelDia.id,
+                fecha_apertura: fechaApertura || registro.fecha_apertura,
+                fecha_cierre: registro.fecha_cierre ?? registro.fecha,
                 estado: "CIERRE",
                 pending_sync: false,
               });
             } catch (e) {
-              console.warn("[RegistroCierre] No se pudo limpiar pending_sync local:", e);
+              console.warn(
+                "[RegistroCierre] No se pudo limpiar pending_sync local:",
+                e,
+              );
             }
           } else {
             // No hay apertura en Supabase, insertar cierre directo
@@ -499,6 +551,8 @@ export default function RegistroCierreView({
                 await upsertOne(STORE.CIERRES, {
                   ...registro,
                   id: insertData.id,
+                  fecha_apertura: fechaApertura || registro.fecha_apertura,
+                  fecha_cierre: registro.fecha_cierre ?? registro.fecha,
                   estado: "CIERRE",
                   pending_sync: false,
                 });
@@ -629,6 +683,52 @@ export default function RegistroCierreView({
     efectivoFilled && tarjetaFilled && transferenciasFilled && dolaresFilled;
   const showGuardar = isCierreReady;
 
+  const efectivoConteo = Number.parseFloat(efectivo);
+  const tarjetaConteo = Number.parseFloat(tarjeta);
+  const transferenciasConteo = Number.parseFloat(transferencias);
+  const dolaresConteo = Number.parseFloat(dolares);
+
+  const efectivoConteoNum = Number.isFinite(efectivoConteo) ? efectivoConteo : 0;
+  const tarjetaConteoNum = Number.isFinite(tarjetaConteo) ? tarjetaConteo : 0;
+  const transferenciasConteoNum = Number.isFinite(transferenciasConteo)
+    ? transferenciasConteo
+    : 0;
+  const dolaresConteoNum = Number.isFinite(dolaresConteo) ? dolaresConteo : 0;
+
+  const diferenciaDolaresUSDLive = dolaresConteoNum - dolaresSistema;
+  const diferenciaDolaresLpsLive = diferenciaDolaresUSDLive * precioDolarActual;
+  const diferenciaLive =
+    (efectivoConteoNum - efectivoSistema) +
+    (tarjetaConteoNum - tarjetaSistema) +
+    (transferenciasConteoNum - transferenciasSistema) +
+    diferenciaDolaresLpsLive;
+
+  const difSignLive =
+    diferenciaLive > 0
+      ? "A FAVOR"
+      : diferenciaLive < 0
+        ? "EN CONTRA"
+        : "CUADRADO";
+  const difAbsLive = Math.abs(diferenciaLive).toFixed(2);
+  const difColorLive =
+    diferenciaLive > 0
+      ? "#166534"
+      : diferenciaLive < 0
+        ? "#b91c1c"
+        : "#0f172a";
+  const difBgLive =
+    diferenciaLive > 0
+      ? "#f0fdf4"
+      : diferenciaLive < 0
+        ? "#fef2f2"
+        : "#f8fafc";
+  const difBorderLive =
+    diferenciaLive > 0
+      ? "#86efac"
+      : diferenciaLive < 0
+        ? "#fca5a5"
+        : "#e2e8f0";
+
   return (
     <div
       style={{
@@ -637,467 +737,842 @@ export default function RegistroCierreView({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-        padding: "20px",
+        background: "#eef0f4",
+        padding: "24px 16px",
       }}
     >
+      <style>{`
+        @keyframes spin { 0%{transform:rotate(0deg)} 100%{transform:rotate(360deg)} }
+        .ci-input:focus { border-color: #2563eb !important; box-shadow: 0 0 0 3px rgba(37,99,235,0.13) !important; background: #fff !important; }
+        .ci-sync:hover:not(:disabled) { background: #e2e8f0 !important; border-color: #94a3b8 !important; }
+        .ci-guardar:hover:not(:disabled) { background: #1d4ed8 !important; transform: translateY(-1px); box-shadow: 0 6px 18px rgba(37,99,235,0.32) !important; }
+        .ci-cancelar:hover { border-color: #94a3b8 !important; background: #f1f5f9 !important; color: #334155 !important; }
+      `}</style>
       <form
         onSubmit={handleGuardar}
         style={{
           background: "#fff",
-          borderRadius: 24,
-          boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
+          borderRadius: 20,
+          boxShadow:
+            "0 4px 30px rgba(15,23,42,0.12), 0 1px 4px rgba(15,23,42,0.06)",
           padding: 0,
           width: "100%",
-          maxWidth: 1200,
+          maxWidth: 1080,
           display: "grid",
           gridTemplateColumns: "1fr 1fr",
           gap: 0,
           overflow: "hidden",
         }}
       >
-        {/* Columna izquierda - Resumen del Sistema */}
+        {/* ═══════ PANEL IZQUIERDO — SISTEMA ═══════ */}
         <div
           style={{
-            background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-            padding: 40,
-            color: "#fff",
+            background: "#f8fafc",
+            padding: "36px 30px",
+            color: "#1e293b",
             display: "flex",
             flexDirection: "column",
-            gap: 24,
+            gap: 14,
+            minHeight: 580,
+            borderRight: "1px solid #e2e8f0",
           }}
         >
-          <h2
-            style={{
-              margin: 0,
-              fontWeight: 800,
-              fontSize: 32,
-              letterSpacing: 1,
-              textShadow: "0 2px 8px rgba(0,0,0,0.2)",
-            }}
-          >
-            Resumen del Sistema
-          </h2>
-
+          {/* Header */}
           <div
             style={{
-              background: "rgba(255,255,255,0.15)",
-              backdropFilter: "blur(10px)",
-              borderRadius: 16,
-              padding: 20,
-              marginBottom: 8,
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "space-between",
+              marginBottom: 4,
             }}
           >
-            <div style={{ fontSize: 14, opacity: 0.9, marginBottom: 12 }}>
-              <div style={{ marginBottom: 6 }}>
-                <strong>Cajero:</strong> {usuarioActual?.nombre}
-              </div>
-              <div style={{ marginBottom: 6 }}>
-                <strong>Caja:</strong> {caja}
-              </div>
-              <div>
-                <strong>Fecha:</strong> {new Date().toLocaleDateString("es-HN")}
-              </div>
-            </div>
-          </div>
-
-          {loading && (
-            <div style={{ textAlign: "center", padding: 20 }}>
+            <div>
               <div
                 style={{
-                  width: 48,
-                  height: 48,
-                  border: "4px solid rgba(255,255,255,0.3)",
-                  borderTop: "4px solid #fff",
+                  fontSize: 10,
+                  letterSpacing: 2,
+                  textTransform: "uppercase",
+                  color: "#475569",
+                  marginBottom: 5,
+                  fontWeight: 700,
+                }}
+              >
+                Cierre de Caja
+              </div>
+              <h2
+                style={{
+                  margin: 0,
+                  fontWeight: 800,
+                  fontSize: 19,
+                  color: "#0f172a",
+                  letterSpacing: 0.2,
+                }}
+              >
+                Resumen del Sistema
+              </h2>
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "#64748b",
+                  marginTop: 4,
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: 4,
+                }}
+              >
+                <span
+                  style={{
+                    background: "#e2e8f0",
+                    color: "#475569",
+                    borderRadius: 5,
+                    padding: "2px 7px",
+                    fontSize: 11,
+                  }}
+                >
+                  {usuarioActual?.nombre}
+                </span>
+                <span
+                  style={{
+                    background: "#e2e8f0",
+                    color: "#475569",
+                    borderRadius: 5,
+                    padding: "2px 7px",
+                    fontSize: 11,
+                  }}
+                >
+                  {caja}
+                </span>
+                <span
+                  style={{
+                    background: "#e2e8f0",
+                    color: "#475569",
+                    borderRadius: 5,
+                    padding: "2px 7px",
+                    fontSize: 11,
+                  }}
+                >
+                  {new Date().toLocaleDateString("es-HN")}
+                </span>
+              </div>
+              {fechaAperturaSistema && (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    marginTop: 6,
+                    padding: "5px 9px",
+                    background: "#e0f2fe",
+                    borderRadius: 7,
+                    border: "1px solid #7dd3fc",
+                    width: "fit-content",
+                  }}
+                >
+                  <span style={{ fontSize: 13 }}>🕐</span>
+                  <div>
+                    <span
+                      style={{
+                        fontSize: 9,
+                        fontWeight: 700,
+                        color: "#0369a1",
+                        textTransform: "uppercase",
+                        letterSpacing: 1,
+                      }}
+                    >
+                      Apertura:
+                    </span>{" "}
+                    <span
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 700,
+                        color: "#0c4a6e",
+                      }}
+                    >
+                      {new Date(fechaAperturaSistema).toLocaleString("es-HN", {
+                        dateStyle: "short",
+                        timeStyle: "short",
+                      })}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+            {/* Botón sincronizar */}
+            <button
+              type="button"
+              disabled={sincronizando || loading}
+              onClick={async () => {
+                if (!usuarioActual?.id) return;
+                setSincronizando(true);
+                setSyncError("");
+                setLoading(true);
+                try {
+                  await sincronizarDiaActual(usuarioActual.id);
+                  setUltimaSync(new Date());
+                  await obtenerValoresAutomaticos();
+                  const tasa = await getPrecioDolarLocal();
+                  setPrecioDolarActual(Number(tasa) || 0);
+                } catch (e) {
+                  setSyncError("Error al sincronizar.");
+                } finally {
+                  setSincronizando(false);
+                  setLoading(false);
+                }
+              }}
+              style={{
+                background: sincronizando ? "#e2e8f0" : "#fff",
+                border: "1.5px solid #cbd5e1",
+                borderRadius: 9,
+                color: sincronizando ? "#94a3b8" : "#2563eb",
+                padding: "7px 13px",
+                fontSize: 12,
+                fontWeight: 700,
+                cursor: sincronizando ? "not-allowed" : "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                transition: "all 0.2s",
+                lineHeight: 1.3,
+                boxShadow: "0 1px 3px rgba(0,0,0,0.07)",
+                flexShrink: 0,
+              }}
+            >
+              {sincronizando ? (
+                <>
+                  <span
+                    style={{
+                      display: "inline-block",
+                      animation: "spin 1s linear infinite",
+                    }}
+                  >
+                    ⟳
+                  </span>{" "}
+                  Sync...
+                </>
+              ) : (
+                <>🔄 Sincronizar</>
+              )}
+            </button>
+          </div>
+
+          {/* Info de última sync */}
+          {ultimaSync && !sincronizando && (
+            <div
+              style={{
+                fontSize: 11,
+                color: "#16a34a",
+                marginTop: -8,
+                display: "flex",
+                alignItems: "center",
+                gap: 5,
+              }}
+            >
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
                   borderRadius: "50%",
-                  animation: "spin 1s linear infinite",
-                  margin: "0 auto",
+                  background: "#22c55e",
+                  display: "inline-block",
+                  flexShrink: 0,
+                }}
+              />
+              Actualizado · {ultimaSync.toLocaleTimeString("es-HN")}
+            </div>
+          )}
+
+          {/* Aviso de error/offline */}
+          {syncError && (
+            <div
+              style={{
+                background: "#fef3c7",
+                border: "1px solid #f59e0b",
+                borderRadius: 8,
+                padding: "8px 12px",
+                fontSize: 12,
+                color: "#92400e",
+                display: "flex",
+                gap: 6,
+                alignItems: "flex-start",
+              }}
+            >
+              ⚠️ {syncError}
+            </div>
+          )}
+
+          {/* Spinner */}
+          {(loading || sincronizando) && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                padding: "8px 0",
+              }}
+            >
+              <div
+                style={{
+                  width: 16,
+                  height: 16,
+                  border: "2.5px solid #e2e8f0",
+                  borderTop: "2.5px solid #2563eb",
+                  borderRadius: "50%",
+                  animation: "spin 0.8s linear infinite",
+                  flexShrink: 0,
                 }}
               />
               <style>{`@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`}</style>
-              <p style={{ marginTop: 16, opacity: 0.9 }}>
-                Calculando valores...
-              </p>
+              <span style={{ fontSize: 12, color: "#64748b" }}>
+                {sincronizando
+                  ? "Sincronizando datos con servidor..."
+                  : "Calculando resumen..."}
+              </span>
             </div>
           )}
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <div
-              style={{
-                background: "rgba(255,255,255,0.2)",
-                backdropFilter: "blur(10px)",
-                borderRadius: 12,
-                padding: 16,
-              }}
-            >
-              <div style={{ fontSize: 13, opacity: 0.85, marginBottom: 6 }}>
-                Efectivo en Sistema
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 700 }}>
-                L {efectivoSistema.toFixed(2)}
-              </div>
-            </div>
+          {/* Divisor */}
+          <div style={{ height: 1, background: "#e2e8f0", margin: "2px 0" }} />
 
+          {/* Tarjetas de valores */}
+          {!loading && (
             <div
               style={{
-                background: "rgba(255,255,255,0.2)",
-                backdropFilter: "blur(10px)",
-                borderRadius: 12,
-                padding: 16,
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+                flex: 1,
               }}
             >
-              <div style={{ fontSize: 13, opacity: 0.85, marginBottom: 6 }}>
-                Tarjeta en Sistema
+              {/* Efectivo Neto */}
+              <div
+                style={{
+                  background: "#f0fdf4",
+                  border: "1.5px solid #86efac",
+                  borderRadius: 11,
+                  padding: "13px 16px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <div>
+                  <div
+                    style={{
+                      fontSize: 10,
+                      color: "#15803d",
+                      letterSpacing: 1.5,
+                      textTransform: "uppercase",
+                      fontWeight: 700,
+                      marginBottom: 2,
+                    }}
+                  >
+                    Efectivo Neto
+                  </div>
+                  <div style={{ fontSize: 10, color: "#4ade80" }}>
+                    ventas − cambio − gastos
+                  </div>
+                </div>
+                <div
+                  style={{
+                    fontSize: 23,
+                    fontWeight: 800,
+                    color: "#15803d",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  L {efectivoSistema.toFixed(2)}
+                </div>
               </div>
-              <div style={{ fontSize: 28, fontWeight: 700 }}>
-                L {tarjetaSistema.toFixed(2)}
-              </div>
-            </div>
 
-            <div
-              style={{
-                background: "rgba(255,255,255,0.2)",
-                backdropFilter: "blur(10px)",
-                borderRadius: 12,
-                padding: 16,
-              }}
-            >
-              <div style={{ fontSize: 13, opacity: 0.85, marginBottom: 6 }}>
-                Transferencias en Sistema
+              {/* Tarjeta */}
+              <div
+                style={{
+                  background: "#eff6ff",
+                  border: "1.5px solid #93c5fd",
+                  borderRadius: 11,
+                  padding: "12px 16px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: "#1d4ed8",
+                    letterSpacing: 1.5,
+                    textTransform: "uppercase",
+                    fontWeight: 700,
+                  }}
+                >
+                  Tarjeta
+                </div>
+                <div
+                  style={{
+                    fontSize: 22,
+                    fontWeight: 800,
+                    color: "#1d4ed8",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  L {tarjetaSistema.toFixed(2)}
+                </div>
               </div>
-              <div style={{ fontSize: 28, fontWeight: 700 }}>
-                L {transferenciasSistema.toFixed(2)}
-              </div>
-            </div>
 
-            <div
-              style={{
-                background: "rgba(255,255,255,0.2)",
-                backdropFilter: "blur(10px)",
-                borderRadius: 12,
-                padding: 16,
-              }}
-            >
-              <div style={{ fontSize: 13, opacity: 0.85, marginBottom: 6 }}>
-                Dólares en Sistema
+              {/* Transferencias */}
+              <div
+                style={{
+                  background: "#f5f3ff",
+                  border: "1.5px solid #c4b5fd",
+                  borderRadius: 11,
+                  padding: "12px 16px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: "#6d28d9",
+                    letterSpacing: 1.5,
+                    textTransform: "uppercase",
+                    fontWeight: 700,
+                  }}
+                >
+                  Transferencia
+                </div>
+                <div
+                  style={{
+                    fontSize: 22,
+                    fontWeight: 800,
+                    color: "#6d28d9",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  L {transferenciasSistema.toFixed(2)}
+                </div>
               </div>
-              <div style={{ fontSize: 28, fontWeight: 700 }}>
-                $ {dolaresSistema.toFixed(2)}
+
+              {/* Dólares */}
+              <div
+                style={{
+                  background: "#fefce8",
+                  border: "1.5px solid #fde047",
+                  borderRadius: 11,
+                  padding: "12px 16px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: "#a16207",
+                    letterSpacing: 1.5,
+                    textTransform: "uppercase",
+                    fontWeight: 700,
+                  }}
+                >
+                  Dólares (USD)
+                </div>
+                <div
+                  style={{
+                    fontSize: 22,
+                    fontWeight: 800,
+                    color: "#a16207",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  $ {dolaresSistema.toFixed(2)}
+                </div>
+              </div>
+
+              {/* Gastos */}
+              <div
+                style={{
+                  background: "#fff1f2",
+                  border: "1.5px solid #fda4af",
+                  borderRadius: 11,
+                  padding: "12px 16px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: "#be123c",
+                    letterSpacing: 1.5,
+                    textTransform: "uppercase",
+                    fontWeight: 700,
+                  }}
+                >
+                  Gastos del Turno
+                </div>
+                <div
+                  style={{
+                    fontSize: 22,
+                    fontWeight: 800,
+                    color: "#be123c",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  L {gastosSistema.toFixed(2)}
+                </div>
+              </div>
+
+              {/* Total Ventas */}
+              <div
+                style={{
+                  marginTop: 6,
+                  borderTop: "1.5px solid #e2e8f0",
+                  paddingTop: 12,
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 700,
+                    color: "#64748b",
+                    textTransform: "uppercase",
+                    letterSpacing: 1.2,
+                  }}
+                >
+                  Total Ventas Brutas
+                </span>
+                <span
+                  style={{
+                    fontSize: 17,
+                    fontWeight: 900,
+                    color: "#0f172a",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  L {totalVentasSistema.toFixed(2)}
+                </span>
               </div>
             </div>
-          </div>
+          )}
 
           <div
             style={{
-              marginTop: "auto",
-              fontSize: 12,
-              opacity: 0.7,
+              fontSize: 10,
+              color: "#94a3b8",
               textAlign: "center",
+              marginTop: "auto",
+              paddingTop: 8,
             }}
           >
-            Los valores del sistema se calculan automáticamente
+            Datos sincronizados desde el servidor al abrir esta pantalla
           </div>
         </div>
 
-        {/* Columna derecha - Formulario de Cierre */}
+        {/* ═════ PANEL DERECHO — FORMULARIO ═════ */}
         <div
           style={{
-            padding: 40,
+            padding: "36px 32px",
+            background: "#fff",
             display: "flex",
             flexDirection: "column",
-            gap: 20,
           }}
         >
-          <h2
+          {/* Encabezado */}
+          <div style={{ marginBottom: 26 }}>
+            <div
+              style={{
+                fontSize: 10,
+                letterSpacing: 2,
+                textTransform: "uppercase",
+                color: "#94a3b8",
+                marginBottom: 4,
+                fontWeight: 700,
+              }}
+            >
+              Conteo Físico
+            </div>
+            <h2
+              style={{
+                margin: 0,
+                fontWeight: 800,
+                fontSize: 21,
+                color: "#0f172a",
+              }}
+            >
+              Registro de Cierre
+            </h2>
+            <p
+              style={{
+                margin: "7px 0 0",
+                color: "#64748b",
+                fontSize: 13,
+                lineHeight: 1.5,
+              }}
+            >
+              Ingresa los montos contados físicamente en tu caja.
+            </p>
+          </div>
+
+          {/* Campos */}
+          <div
             style={{
-              color: "#1976d2",
-              margin: 0,
-              fontWeight: 800,
-              fontSize: 28,
-              letterSpacing: 0.5,
+              display: "flex",
+              flexDirection: "column",
+              gap: 14,
+              flex: 1,
             }}
           >
-            Registro de Cierre
-          </h2>
+            {[
+              {
+                label: "Efectivo contado",
+                badge: "L",
+                badgeBg: "#dcfce7",
+                badgeColor: "#15803d",
+                value: efectivo,
+                set: setEfectivo,
+                required: true,
+              },
+              {
+                label: "Tarjeta",
+                badge: "💳",
+                badgeBg: "#dbeafe",
+                badgeColor: "#1d4ed8",
+                value: tarjeta,
+                set: setTarjeta,
+                required: true,
+              },
+              {
+                label: "Transferencias",
+                badge: "🏦",
+                badgeBg: "#ede9fe",
+                badgeColor: "#6d28d9",
+                value: transferencias,
+                set: setTransferencias,
+                required: true,
+              },
+              {
+                label: "Dólares (USD)",
+                badge: "$",
+                badgeBg: "#fef9c3",
+                badgeColor: "#a16207",
+                value: dolares,
+                set: setDolares,
+                required: false,
+              },
+            ].map(
+              ({ label, badge, badgeBg, badgeColor, value, set, required }) => (
+                <div key={label}>
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      color: "#1e293b",
+                      fontWeight: 600,
+                      fontSize: 13,
+                      marginBottom: 6,
+                    }}
+                  >
+                    <span
+                      style={{
+                        background: badgeBg,
+                        color: badgeColor,
+                        borderRadius: 5,
+                        padding: "2px 7px",
+                        fontSize: 11,
+                        fontWeight: 800,
+                      }}
+                    >
+                      {badge}
+                    </span>
+                    {label}
+                  </label>
+                  <input
+                    className="ci-input"
+                    type="number"
+                    step="0.01"
+                    value={value}
+                    onChange={(e) => set(e.target.value)}
+                    required={required}
+                    placeholder="0.00"
+                    style={{
+                      padding: "11px 13px",
+                      fontSize: 15,
+                      border: "1.5px solid #dde1e7",
+                      borderRadius: 10,
+                      outline: "none",
+                      width: "100%",
+                      boxSizing: "border-box",
+                      background: "#f8fafc",
+                      color: "#1e293b",
+                      fontWeight: 500,
+                      transition:
+                        "border 0.2s, box-shadow 0.2s, background 0.2s",
+                    }}
+                  />
+                </div>
+              ),
+            )}
+          </div>
 
-          <p
-            style={{ margin: 0, color: "#666", fontSize: 15, marginBottom: 28 }}
+          {/* Resultado en vivo (misma lógica del cierre impreso) */}
+          <div
+            style={{
+              marginTop: 14,
+              background: difBgLive,
+              border: `1.5px solid ${difBorderLive}`,
+              borderRadius: 11,
+              padding: "12px 14px",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 12,
+            }}
           >
-            Ingresa los valores contados físicamente en tu caja
-          </p>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
             <div>
-              <label
+              <div
                 style={{
-                  color: "#333",
-                  fontWeight: 600,
-                  fontSize: 15,
-                  marginBottom: 8,
-                  display: "block",
+                  fontSize: 10,
+                  fontWeight: 800,
+                  letterSpacing: 1.2,
+                  textTransform: "uppercase",
+                  color: "#64748b",
                 }}
               >
-                Efectivo Contado (Lempiras)
-              </label>
-              <input
-                type="number"
-                step="0.01"
-                value={efectivo}
-                onChange={(e) => setEfectivo(e.target.value)}
-                required
-                placeholder="0.00"
+                Resultado en vivo
+              </div>
+              <div
                 style={{
-                  padding: 14,
-                  fontSize: 16,
-                  border: "2px solid #e0e0e0",
-                  borderRadius: 10,
-                  outline: "none",
-                  transition: "border 0.3s, box-shadow 0.3s",
-                  width: "100%",
-                  boxSizing: "border-box",
+                  fontSize: 17,
+                  fontWeight: 900,
+                  color: difColorLive,
+                  fontVariantNumeric: "tabular-nums",
+                  marginTop: 2,
                 }}
-                onFocus={(e) => {
-                  e.currentTarget.style.borderColor = "#667eea";
-                  e.currentTarget.style.boxShadow =
-                    "0 0 0 3px rgba(102,126,234,0.1)";
-                }}
-                onBlur={(e) => {
-                  e.currentTarget.style.borderColor = "#e0e0e0";
-                  e.currentTarget.style.boxShadow = "none";
-                }}
-              />
+              >
+                L {difAbsLive}
+              </div>
             </div>
 
-            <div>
-              <label
+            <div
+              style={{
+                textAlign: "right",
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+              }}
+            >
+              <span
                 style={{
-                  color: "#333",
-                  fontWeight: 600,
-                  fontSize: 15,
-                  marginBottom: 8,
-                  display: "block",
+                  fontSize: 11,
+                  fontWeight: 800,
+                  color: difColorLive,
+                  letterSpacing: 0.5,
                 }}
               >
-                Tarjeta (Lempiras)
-              </label>
-              <input
-                type="number"
-                step="0.01"
-                value={tarjeta}
-                onChange={(e) => setTarjeta(e.target.value)}
-                required
-                placeholder="0.00"
-                style={{
-                  padding: 14,
-                  fontSize: 16,
-                  border: "2px solid #e0e0e0",
-                  borderRadius: 10,
-                  outline: "none",
-                  transition: "border 0.3s, box-shadow 0.3s",
-                  width: "100%",
-                  boxSizing: "border-box",
-                }}
-                onFocus={(e) => {
-                  e.currentTarget.style.borderColor = "#667eea";
-                  e.currentTarget.style.boxShadow =
-                    "0 0 0 3px rgba(102,126,234,0.1)";
-                }}
-                onBlur={(e) => {
-                  e.currentTarget.style.borderColor = "#e0e0e0";
-                  e.currentTarget.style.boxShadow = "none";
-                }}
-              />
-            </div>
-
-            <div>
-              <label
-                style={{
-                  color: "#333",
-                  fontWeight: 600,
-                  fontSize: 15,
-                  marginBottom: 8,
-                  display: "block",
-                }}
-              >
-                Transferencias (Lempiras)
-              </label>
-              <input
-                type="number"
-                step="0.01"
-                value={transferencias}
-                onChange={(e) => setTransferencias(e.target.value)}
-                required
-                placeholder="0.00"
-                style={{
-                  padding: 14,
-                  fontSize: 16,
-                  border: "2px solid #e0e0e0",
-                  borderRadius: 10,
-                  outline: "none",
-                  transition: "border 0.3s, box-shadow 0.3s",
-                  width: "100%",
-                  boxSizing: "border-box",
-                }}
-                onFocus={(e) => {
-                  e.currentTarget.style.borderColor = "#667eea";
-                  e.currentTarget.style.boxShadow =
-                    "0 0 0 3px rgba(102,126,234,0.1)";
-                }}
-                onBlur={(e) => {
-                  e.currentTarget.style.borderColor = "#e0e0e0";
-                  e.currentTarget.style.boxShadow = "none";
-                }}
-              />
-            </div>
-
-            <div>
-              <label
-                style={{
-                  color: "#333",
-                  fontWeight: 600,
-                  fontSize: 15,
-                  marginBottom: 8,
-                  display: "block",
-                }}
-              >
-                Dólares (USD)
-              </label>
-              <input
-                type="number"
-                step="0.01"
-                value={dolares}
-                onChange={(e) => setDolares(e.target.value)}
-                placeholder="0.00 "
-                style={{
-                  padding: 14,
-                  fontSize: 16,
-                  border: "2px solid #e0e0e0",
-                  borderRadius: 10,
-                  outline: "none",
-                  transition: "border 0.3s, box-shadow 0.3s",
-                  width: "100%",
-                  boxSizing: "border-box",
-                }}
-                onFocus={(e) => {
-                  e.currentTarget.style.borderColor = "#667eea";
-                  e.currentTarget.style.boxShadow =
-                    "0 0 0 3px rgba(102,126,234,0.1)";
-                }}
-                onBlur={(e) => {
-                  e.currentTarget.style.borderColor = "#e0e0e0";
-                  e.currentTarget.style.boxShadow = "none";
-                }}
-              />
+                {difSignLive}
+              </span>
+              <span style={{ fontSize: 10, color: "#64748b" }}>
+                Tasa $: L {precioDolarActual.toFixed(2)}
+              </span>
             </div>
           </div>
 
+          {/* Error */}
           {error && (
             <div
               style={{
-                background: "#fee",
-                border: "2px solid #f44336",
+                background: "#fef2f2",
+                border: "1.5px solid #fca5a5",
                 borderRadius: 10,
-                padding: 16,
-                color: "#c62828",
+                padding: "11px 14px",
+                color: "#b91c1c",
                 fontWeight: 600,
-                marginTop: 16,
+                fontSize: 13,
+                marginTop: 14,
               }}
             >
-              {error}
+              ⚠ {error}
             </div>
           )}
 
+          {/* Estado campos */}
           {!showGuardar && (
             <div
               style={{
-                marginTop: 16,
-                padding: 14,
+                marginTop: 18,
+                padding: "11px 14px",
                 textAlign: "center",
-                color: "#999",
+                color: "#94a3b8",
                 borderRadius: 10,
-                border: "1px dashed #e0e0e0",
-                background: "#fafafa",
-                fontWeight: 600,
+                border: "1.5px dashed #e2e8f0",
+                background: "#f8fafc",
+                fontSize: 13,
+                fontWeight: 500,
               }}
             >
-              Rellene los campos requeridos para registrar el cierre
+              Complete todos los campos para habilitar el cierre
             </div>
           )}
 
+          {/* Botón guardar */}
           {showGuardar && (
             <button
               type="submit"
+              className="ci-guardar"
               disabled={guardando}
               style={{
-                marginTop: 20,
-                padding: 16,
-                backgroundColor: guardando ? "#ccc" : "#667eea",
+                marginTop: 18,
+                padding: "14px 24px",
+                background: guardando ? "#cbd5e1" : "#2563eb",
                 color: "#fff",
                 border: "none",
-                borderRadius: 12,
-                fontWeight: 700,
-                fontSize: 17,
+                borderRadius: 11,
+                fontWeight: 800,
+                fontSize: 14,
                 cursor: guardando ? "not-allowed" : "pointer",
-                transition: "all 0.3s",
                 boxShadow: guardando
                   ? "none"
-                  : "0 4px 14px rgba(102,126,234,0.4)",
-                letterSpacing: 0.5,
+                  : "0 3px 14px rgba(37,99,235,0.25)",
+                letterSpacing: 0.7,
                 width: "100%",
-              }}
-              onMouseEnter={(e) => {
-                if (!guardando) {
-                  e.currentTarget.style.backgroundColor = "#5568d3";
-                  e.currentTarget.style.transform = "translateY(-2px)";
-                  e.currentTarget.style.boxShadow =
-                    "0 6px 20px rgba(102,126,234,0.5)";
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (!guardando) {
-                  e.currentTarget.style.backgroundColor = "#667eea";
-                  e.currentTarget.style.transform = "translateY(0)";
-                  e.currentTarget.style.boxShadow =
-                    "0 4px 14px rgba(102,126,234,0.4)";
-                }
+                transition: "all 0.2s",
+                textTransform: "uppercase",
               }}
             >
-              {guardando ? "Guardando..." : "REGISTRAR CIERRE DE CAJA"}
+              {guardando ? "Guardando cierre..." : "✓ Registrar Cierre de Caja"}
             </button>
           )}
 
+          {/* Botón cancelar */}
           <button
             type="button"
+            className="ci-cancelar"
             onClick={() => {
-              if (onBack) {
-                if (window.confirm("¿Cancelar el registro de cierre?")) {
-                  onBack();
-                }
+              if (onBack && window.confirm("¿Regresar al Punto de Venta?")) {
+                onBack();
               }
             }}
             style={{
-              marginTop: 12,
-              padding: 14,
-              backgroundColor: "transparent",
-              color: "#666",
-              border: "2px solid #e0e0e0",
-              borderRadius: 12,
+              marginTop: 20,
+              padding: "12px 24px",
+              background: "transparent",
+              color: "#64748b",
+              border: "1.5px solid #e2e8f0",
+              borderRadius: 11,
               fontWeight: 600,
-              fontSize: 15,
+              fontSize: 13,
               cursor: "pointer",
-              transition: "all 0.3s",
               width: "100%",
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.borderColor = "#999";
-              e.currentTarget.style.color = "#333";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.borderColor = "#e0e0e0";
-              e.currentTarget.style.color = "#666";
+              transition: "all 0.2s",
             }}
           >
-            Cancelar
+            ← Regresar a Punto de Venta
           </button>
         </div>
       </form>

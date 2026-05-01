@@ -188,6 +188,8 @@ export interface AperturaCache {
   cajero?: string; // nombre del cajero (necesario para sync offline)
   caja: string;
   fecha: string;
+  fecha_apertura?: string;
+  fecha_cierre?: string | null;
   estado: string;
   pending_sync?: boolean; // true = creada offline, pendiente de subir a Supabase
   timestamp: number;
@@ -1889,6 +1891,8 @@ export interface AperturaLocalStorage {
   cajero?: string; // nombre del cajero
   caja: string;
   fecha: string;
+  fecha_apertura?: string;
+  fecha_cierre?: string | null;
   estado: string;
   pending_sync?: boolean; // true = creada offline, sin subir a Supabase aún
   guardadoEn: number;
@@ -1940,6 +1944,8 @@ export async function guardarAperturaCache(
     cajero_id: apertura.cajero_id,
     caja: apertura.caja,
     fecha: apertura.fecha,
+    fecha_apertura: apertura.fecha_apertura ?? apertura.fecha,
+    fecha_cierre: apertura.fecha_cierre ?? null,
     estado: apertura.estado,
   });
 
@@ -1953,6 +1959,8 @@ export async function guardarAperturaCache(
       cajero: (apertura as any).cajero || "",
       caja: apertura.caja,
       fecha: apertura.fecha,
+      fecha_apertura: apertura.fecha_apertura ?? apertura.fecha,
+      fecha_cierre: apertura.fecha_cierre ?? null,
       estado: "APERTURA",
     };
     if ((apertura as any).pending_sync !== undefined) {
@@ -2071,7 +2079,9 @@ export async function sincronizarAperturaPendiente(): Promise<boolean> {
     // Verificar primero si ya existe en Supabase (idempotente)
     const { data: existente } = await supabase
       .from("cierres")
-      .select("id, cajero_id, caja, fecha, estado")
+      .select(
+        "id, cajero_id, caja, fecha, fecha_apertura, fecha_cierre, estado",
+      )
       .eq("cajero_id", aperturaLS.cajero_id)
       .eq("caja", aperturaLS.caja)
       .eq("estado", "APERTURA")
@@ -2094,6 +2104,8 @@ export async function sincronizarAperturaPendiente(): Promise<boolean> {
         cajero: aperturaLS.cajero,
         caja: existente.caja,
         fecha: existente.fecha,
+        fecha_apertura: existente.fecha_apertura ?? existente.fecha,
+        fecha_cierre: existente.fecha_cierre ?? null,
         estado: existente.estado,
         pending_sync: false,
       });
@@ -2110,6 +2122,8 @@ export async function sincronizarAperturaPendiente(): Promise<boolean> {
           cajero_id: aperturaLS.cajero_id,
           caja: aperturaLS.caja,
           fecha: aperturaLS.fecha,
+          fecha_apertura: aperturaLS.fecha_apertura ?? aperturaLS.fecha,
+          fecha_cierre: null,
           fondo_fijo_registrado: 0,
           fondo_fijo: 0,
           efectivo_registrado: 0,

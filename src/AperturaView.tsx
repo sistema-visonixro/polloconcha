@@ -65,6 +65,7 @@ export default function AperturaView({
           cajero_id: aperturaIdb.cajero_id ?? usuarioActual?.id ?? "",
           caja: aperturaIdb.caja ?? caja,
           fecha: aperturaIdb.fecha ?? "",
+          fecha_apertura: aperturaIdb.fecha_apertura ?? aperturaIdb.fecha ?? "",
           estado: "APERTURA",
         });
         setLoading(false);
@@ -79,6 +80,7 @@ export default function AperturaView({
         cajero_id: usuarioActual?.id,
         caja,
         fecha: formatToHondurasLocal(),
+        fecha_apertura: formatToHondurasLocal(),
         fondo_fijo_registrado: parseFloat(fondoFijo) || 0,
         fondo_fijo: 0,
         efectivo_registrado: 0,
@@ -103,6 +105,7 @@ export default function AperturaView({
           cajero_id: usuarioActual?.id ?? "",
           caja: caja ?? "",
           fecha: aperturaData.fecha,
+          fecha_apertura: aperturaData.fecha_apertura,
           estado: "APERTURA",
         });
         console.log("✓ Apertura guardada en IDB (offline)");
@@ -134,6 +137,7 @@ export default function AperturaView({
           cajero_id: usuarioActual?.id ?? "",
           caja: caja ?? "",
           fecha: aperturaData.fecha,
+          fecha_apertura: aperturaData.fecha_apertura,
           estado: "APERTURA",
         });
         setLoading(false);
@@ -148,6 +152,7 @@ export default function AperturaView({
           cajero_id: ap.cajero_id ?? usuarioActual?.id,
           caja: ap.caja ?? caja,
           fecha: ap.fecha,
+          fecha_apertura: ap.fecha_apertura ?? ap.fecha,
           estado: "APERTURA",
           tipo_registro: "apertura",
         });
@@ -156,6 +161,7 @@ export default function AperturaView({
           cajero_id: ap.cajero_id ?? usuarioActual?.id ?? "",
           caja: ap.caja ?? caja,
           fecha: ap.fecha ?? "",
+          fecha_apertura: ap.fecha_apertura ?? ap.fecha ?? "",
           estado: "APERTURA",
         });
         setLoading(false);
@@ -189,6 +195,7 @@ export default function AperturaView({
             cajero_id: ap.cajero_id ?? usuarioActual?.id ?? "",
             caja: ap.caja ?? caja,
             fecha: ap.fecha ?? "",
+            fecha_apertura: ap.fecha_apertura ?? ap.fecha ?? "",
             estado: ap.estado ?? "APERTURA",
           });
           // Guardar en STORE.CIERRES (IDB — fuente de verdad offline)
@@ -197,6 +204,7 @@ export default function AperturaView({
             cajero_id: ap.cajero_id ?? usuarioActual?.id,
             caja: ap.caja ?? caja,
             fecha: ap.fecha,
+            fecha_apertura: ap.fecha_apertura ?? ap.fecha,
             estado: "APERTURA",
             tipo_registro: "apertura",
           }).catch((e) => console.warn("[AperturaView] IDB upsert error:", e));

@@ -132,8 +132,8 @@ export default function ResultadosView({
           .filter((c) => c.cajero_id === cajeroId && c.estado === "APERTURA")
           .sort(
             (a, b) =>
-              new Date(b.fecha ?? 0).getTime() -
-              new Date(a.fecha ?? 0).getTime(),
+              new Date(b.fecha_apertura ?? b.fecha ?? 0).getTime() -
+              new Date(a.fecha_apertura ?? a.fecha ?? 0).getTime(),
           )[0] ?? null;
 
       if (!aperturaLocal) {
