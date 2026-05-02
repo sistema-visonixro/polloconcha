@@ -201,7 +201,15 @@ const initialRecipeForm: RecipeFormState = {
   modoConsumo: "receta",
   rendimiento: "1",
   descripcion: "",
-  detalles: [{ tipo_item: "insumo" as const, insumo_id: "", complemento_id: "", cantidad: "", unidad: "" }],
+  detalles: [
+    {
+      tipo_item: "insumo" as const,
+      insumo_id: "",
+      complemento_id: "",
+      cantidad: "",
+      unidad: "",
+    },
+  ],
 };
 
 const money = new Intl.NumberFormat("es-HN", {
@@ -422,7 +430,8 @@ export default function MovimientosInventarioView({
     () => productos.find((product) => product.id === recipeForm.productoId),
     [productos, recipeForm.productoId],
   );
-  const isRecipeProductComplemento = selectedRecipeProduct?.tipo === "complemento";
+  const isRecipeProductComplemento =
+    selectedRecipeProduct?.tipo === "complemento";
 
   const loadResumen = async () => {
     const primary = await supabase
@@ -678,7 +687,7 @@ export default function MovimientosInventarioView({
     const forcedModoConsumo =
       producto?.tipo === "complemento"
         ? "receta"
-        : (config?.modo_consumo || "receta");
+        : config?.modo_consumo || "receta";
 
     const { data: receta, error: recetaError } = await supabase
       .from("recetas")
@@ -697,7 +706,15 @@ export default function MovimientosInventarioView({
         modoConsumo: forcedModoConsumo,
         rendimiento: "1",
         descripcion: "",
-        detalles: [{ tipo_item: "insumo" as const, insumo_id: "", complemento_id: "", cantidad: "", unidad: "" }],
+        detalles: [
+          {
+            tipo_item: "insumo" as const,
+            insumo_id: "",
+            complemento_id: "",
+            cantidad: "",
+            unidad: "",
+          },
+        ],
       });
       return;
     }
@@ -724,12 +741,22 @@ export default function MovimientosInventarioView({
       detalles: (detalles || []).map((item: any) => ({
         id: item.id,
         receta_id: item.receta_id,
-        tipo_item: (item.complemento_id ? "complemento" : "insumo") as "insumo" | "complemento",
+        tipo_item: (item.complemento_id ? "complemento" : "insumo") as
+          | "insumo"
+          | "complemento",
         insumo_id: item.insumo_id || "",
         complemento_id: item.complemento_id || "",
         cantidad: String(item.cantidad ?? ""),
         unidad: item.unidad || "",
-      })) || [{ tipo_item: "insumo" as const, insumo_id: "", complemento_id: "", cantidad: "", unidad: "" }],
+      })) || [
+        {
+          tipo_item: "insumo" as const,
+          insumo_id: "",
+          complemento_id: "",
+          cantidad: "",
+          unidad: "",
+        },
+      ],
     });
   };
 
@@ -807,8 +834,12 @@ export default function MovimientosInventarioView({
 
       const validDetails = recipeForm.detalles.filter(
         (item) =>
-          (item.tipo_item === "insumo" && item.insumo_id && numberValue(item.cantidad) > 0) ||
-          (item.tipo_item === "complemento" && item.complemento_id && numberValue(item.cantidad) > 0),
+          (item.tipo_item === "insumo" &&
+            item.insumo_id &&
+            numberValue(item.cantidad) > 0) ||
+          (item.tipo_item === "complemento" &&
+            item.complemento_id &&
+            numberValue(item.cantidad) > 0),
       );
 
       const { error: configError } = await supabase
@@ -829,7 +860,9 @@ export default function MovimientosInventarioView({
 
       if (effectiveModoConsumo === "receta") {
         if (validDetails.length === 0) {
-          throw new Error("Agrega al menos un insumo o complemento con cantidad válida.");
+          throw new Error(
+            "Agrega al menos un insumo o complemento con cantidad válida.",
+          );
         }
 
         let currentRecipeId = recipeId;
@@ -880,11 +913,13 @@ export default function MovimientosInventarioView({
         const detallePayload = validDetails.map((item) => ({
           receta_id: currentRecipeId,
           insumo_id: item.tipo_item === "insumo" ? item.insumo_id : null,
-          complemento_id: item.tipo_item === "complemento" ? item.complemento_id : null,
+          complemento_id:
+            item.tipo_item === "complemento" ? item.complemento_id : null,
           cantidad: numberValue(item.cantidad),
           unidad:
             item.tipo_item === "insumo"
-              ? (insumos.find((insumo) => insumo.id === item.insumo_id)?.unidad || "unidad")
+              ? insumos.find((insumo) => insumo.id === item.insumo_id)
+                  ?.unidad || "unidad"
               : "unidad",
         }));
 
@@ -1781,7 +1816,12 @@ export default function MovimientosInventarioView({
                                     {producto.tipo}
                                   </span>
                                 </td>
-                                <td style={{ color: cfg ? "#0f172a" : "#94a3b8", fontSize: "0.88rem" }}>
+                                <td
+                                  style={{
+                                    color: cfg ? "#0f172a" : "#94a3b8",
+                                    fontSize: "0.88rem",
+                                  }}
+                                >
                                   {modoLabel}
                                 </td>
                                 <td>
@@ -2632,7 +2672,10 @@ export default function MovimientosInventarioView({
                               <td>
                                 <button
                                   className="inventory-btn secondary"
-                                  style={{ padding: "4px 10px", fontSize: "0.8rem" }}
+                                  style={{
+                                    padding: "4px 10px",
+                                    fontSize: "0.8rem",
+                                  }}
                                   onClick={() =>
                                     setEditInsumoModal({
                                       id: r.id,
@@ -2681,13 +2724,13 @@ export default function MovimientosInventarioView({
                       <table className="inventory-table">
                         <thead>
                           <tr>
-                              <th>Nombre</th>
-                              <th style={{ textAlign: "right" }}>Stock actual</th>
-                              <th style={{ textAlign: "right" }}>Mínimo</th>
-                              <th style={{ textAlign: "right" }}>Entradas</th>
-                              <th style={{ textAlign: "right" }}>Salidas</th>
-                              <th>Alerta</th>
-                              <th></th>
+                            <th>Nombre</th>
+                            <th style={{ textAlign: "right" }}>Stock actual</th>
+                            <th style={{ textAlign: "right" }}>Mínimo</th>
+                            <th style={{ textAlign: "right" }}>Entradas</th>
+                            <th style={{ textAlign: "right" }}>Salidas</th>
+                            <th>Alerta</th>
+                            <th></th>
                           </tr>
                         </thead>
                         <tbody>
@@ -3246,7 +3289,9 @@ export default function MovimientosInventarioView({
                     disabled={isRecipeProductComplemento}
                   >
                     {(isRecipeProductComplemento
-                      ? CONSUMPTION_MODES.filter((mode) => mode.value === "receta")
+                      ? CONSUMPTION_MODES.filter(
+                          (mode) => mode.value === "receta",
+                        )
                       : CONSUMPTION_MODES
                     ).map((mode) => (
                       <option key={mode.value} value={mode.value}>
@@ -3276,11 +3321,12 @@ export default function MovimientosInventarioView({
                         rendimiento: event.target.value,
                       }))
                     }
-                    disabled={recipeForm.modoConsumo !== "receta" && !isRecipeProductComplemento}
+                    disabled={
+                      recipeForm.modoConsumo !== "receta" &&
+                      !isRecipeProductComplemento
+                    }
                   />
-                  <div
-                    style={{ fontSize: 11, color: "#94a3b8", marginTop: 4 }}
-                  >
+                  <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 4 }}>
                     Unidades producidas por ejecución de receta
                   </div>
                 </div>
@@ -3302,7 +3348,8 @@ export default function MovimientosInventarioView({
               </div>
 
               {/* ── Ingredientes ───────────────────────────────────────── */}
-              {(recipeForm.modoConsumo === "receta" || isRecipeProductComplemento) && (
+              {(recipeForm.modoConsumo === "receta" ||
+                isRecipeProductComplemento) && (
                 <div
                   style={{
                     border: "1px solid #e2e8f0",
@@ -3399,7 +3446,11 @@ export default function MovimientosInventarioView({
                           {/* tipo toggle */}
                           <div>
                             <div
-                              style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}
+                              style={{
+                                fontSize: 11,
+                                color: "#64748b",
+                                marginBottom: 4,
+                              }}
                             >
                               Tipo
                             </div>
@@ -3473,7 +3524,11 @@ export default function MovimientosInventarioView({
                           {/* item selector */}
                           <div>
                             <div
-                              style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}
+                              style={{
+                                fontSize: 11,
+                                color: "#64748b",
+                                marginBottom: 4,
+                              }}
                             >
                               {isInsumo ? "Insumo" : "Complemento"}
                             </div>
@@ -3519,13 +3574,18 @@ export default function MovimientosInventarioView({
                                     ...prev,
                                     detalles: prev.detalles.map((d, i) =>
                                       i === index
-                                        ? { ...d, complemento_id: e.target.value }
+                                        ? {
+                                            ...d,
+                                            complemento_id: e.target.value,
+                                          }
                                         : d,
                                     ),
                                   }))
                                 }
                               >
-                                <option value="">Seleccionar complemento</option>
+                                <option value="">
+                                  Seleccionar complemento
+                                </option>
                                 {productos
                                   .filter((p) => p.tipo === "complemento")
                                   .map((p) => (
@@ -3540,7 +3600,11 @@ export default function MovimientosInventarioView({
                           {/* cantidad */}
                           <div>
                             <div
-                              style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}
+                              style={{
+                                fontSize: 11,
+                                color: "#64748b",
+                                marginBottom: 4,
+                              }}
                             >
                               Cantidad
                             </div>
@@ -3566,21 +3630,36 @@ export default function MovimientosInventarioView({
                           {/* unidad */}
                           <div>
                             <div
-                              style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}
+                              style={{
+                                fontSize: 11,
+                                color: "#64748b",
+                                marginBottom: 4,
+                              }}
                             >
                               Unidad
                             </div>
                             <input
                               className="inventory-input"
-                              value={detail.unidad || (isInsumo ? "" : "unidad")}
+                              value={
+                                detail.unidad || (isInsumo ? "" : "unidad")
+                              }
                               readOnly
-                              style={{ background: "#f1f5f9", color: "#64748b" }}
+                              style={{
+                                background: "#f1f5f9",
+                                color: "#64748b",
+                              }}
                             />
                           </div>
 
                           {/* quitar */}
                           <div>
-                            <div style={{ fontSize: 11, color: "transparent", marginBottom: 4 }}>
+                            <div
+                              style={{
+                                fontSize: 11,
+                                color: "transparent",
+                                marginBottom: 4,
+                              }}
+                            >
                               &nbsp;
                             </div>
                             <button
@@ -3622,7 +3701,14 @@ export default function MovimientosInventarioView({
                       );
                     })}
                     {recipeForm.detalles.length === 0 && (
-                      <p style={{ color: "#94a3b8", textAlign: "center", padding: 20, margin: 0 }}>
+                      <p
+                        style={{
+                          color: "#94a3b8",
+                          textAlign: "center",
+                          padding: 20,
+                          margin: 0,
+                        }}
+                      >
                         Agrega ingredientes con los botones de arriba
                       </p>
                     )}
@@ -3631,7 +3717,14 @@ export default function MovimientosInventarioView({
               )}
 
               {/* ── Footer ─────────────────────────────────────────────── */}
-              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+              <div
+                style={{
+                  display: "flex",
+                  gap: 10,
+                  justifyContent: "flex-end",
+                  flexWrap: "wrap",
+                }}
+              >
                 <button
                   type="button"
                   className="inventory-btn secondary"
@@ -3697,7 +3790,9 @@ export default function MovimientosInventarioView({
                   className="inventory-input"
                   value={editInsumoModal.nombre}
                   onChange={(e) =>
-                    setEditInsumoModal((p) => p && { ...p, nombre: e.target.value })
+                    setEditInsumoModal(
+                      (p) => p && { ...p, nombre: e.target.value },
+                    )
                   }
                   autoFocus
                 />
@@ -3708,7 +3803,9 @@ export default function MovimientosInventarioView({
                   className="inventory-select"
                   value={editInsumoModal.unidad}
                   onChange={(e) =>
-                    setEditInsumoModal((p) => p && { ...p, unidad: e.target.value })
+                    setEditInsumoModal(
+                      (p) => p && { ...p, unidad: e.target.value },
+                    )
                   }
                 >
                   <option value="unidad">Unidad</option>
@@ -3733,7 +3830,9 @@ export default function MovimientosInventarioView({
                   placeholder="general, empaque, bebidas..."
                   value={editInsumoModal.categoria}
                   onChange={(e) =>
-                    setEditInsumoModal((p) => p && { ...p, categoria: e.target.value })
+                    setEditInsumoModal(
+                      (p) => p && { ...p, categoria: e.target.value },
+                    )
                   }
                 />
               </div>
@@ -3746,7 +3845,9 @@ export default function MovimientosInventarioView({
                   step="0.001"
                   value={editInsumoModal.stock_minimo}
                   onChange={(e) =>
-                    setEditInsumoModal((p) => p && { ...p, stock_minimo: e.target.value })
+                    setEditInsumoModal(
+                      (p) => p && { ...p, stock_minimo: e.target.value },
+                    )
                   }
                 />
               </div>

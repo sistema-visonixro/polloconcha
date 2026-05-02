@@ -235,6 +235,37 @@ export async function obtenerPagosProveedor(
   return data ?? [];
 }
 
+export async function obtenerPagosProveedores(params?: {
+  proveedorId?: string;
+  fechaDesde?: string;
+  fechaHasta?: string;
+}): Promise<any[]> {
+  let query = supabase
+    .from("pagos_proveedores")
+    .select("*, proveedores(nombre_comercial), cuentas_por_pagar(concepto, numero_documento)")
+    .order("fecha_hora", { ascending: false });
+
+  if (params?.proveedorId) {
+    query = query.eq("proveedor_id", params.proveedorId);
+  }
+  if (params?.fechaDesde) {
+    query = query.gte("fecha_hora", `${params.fechaDesde} 00:00:00`);
+  }
+  if (params?.fechaHasta) {
+    query = query.lte("fecha_hora", `${params.fechaHasta} 23:59:59`);
+  }
+
+  const { data, error } = await query;
+  if (error) throw new Error(error.message);
+
+  return (data ?? []).map((row: any) => ({
+    ...row,
+    proveedor_nombre: row?.proveedores?.nombre_comercial ?? "Proveedor",
+    concepto_cxp: row?.cuentas_por_pagar?.concepto ?? "—",
+    numero_documento: row?.cuentas_por_pagar?.numero_documento ?? "—",
+  }));
+}
+
 // ─────────────────────────────────────────────────────────────
 // RESUMEN CxP
 // ─────────────────────────────────────────────────────────────

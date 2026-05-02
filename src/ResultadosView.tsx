@@ -473,17 +473,50 @@ export default function ResultadosView({
       setPagosTotales(pt);
       setPagos(pagosData || []);
 
-      calcularMensual(factData || [], gastData || [], pagosData || []);
-      calcularPorDia(factData || []);
+      const totalGastosPeriodo = (gastData || []).reduce(
+        (sum: number, g: any) => sum + Number(g.monto || 0),
+        0,
+      );
+
+      try {
+        let resumenVentasQuery = supabase
+          .from("vw_reporte_ventas_periodo")
+          .select("periodo_inicio, ventas_total")
+          .eq("periodo_tipo", "dia")
+          .gte("periodo_inicio", `${desde.split("T")[0]} 00:00:00`)
+          .lte("periodo_inicio", `${hasta.split("T")[0]} 23:59:59`)
+          .order("periodo_inicio", { ascending: true });
+        if (cajeroFiltro)
+          resumenVentasQuery = resumenVentasQuery.eq("cajero_id", cajeroFiltro);
+
+        const { data: resumenVentasData, error: resumenVentasError } =
+          await resumenVentasQuery;
+        if (resumenVentasError) throw resumenVentasError;
+
+        const totalVentasVista = (resumenVentasData || []).reduce(
+          (sum: number, row: any) => sum + Number(row.ventas_total || 0),
+          0,
+        );
+        setBalance(totalVentasVista - totalGastosPeriodo);
+
+        const ventasArray = (resumenVentasData || []).map((row: any) => ({
+          fecha: String(row.periodo_inicio || "").slice(0, 10),
+          total: Number(row.ventas_total || 0),
+        }));
+        setVentasPorDia(ventasArray);
+      } catch {
+        calcularMensual(factData || [], gastData || [], pagosData || []);
+        calcularPorDia(factData || []);
+      }
+
       function calcularPorDia(facturas: any[]) {
-        // Agrupar ventas por día
         const ventasAgrupadas: { [fecha: string]: number } = {};
         facturas.forEach((fact) => {
-          const fecha = fact.fecha_hora.split("T")[0];
+          const fecha = String(fact.fecha_hora || "").split("T")[0];
+          if (!fecha) return;
           ventasAgrupadas[fecha] =
-            (ventasAgrupadas[fecha] || 0) + (fact.total || 0);
+            (ventasAgrupadas[fecha] || 0) + Number(fact.total || 0);
         });
-        // Convertir a array para la gráfica
         const ventasArray = Object.entries(ventasAgrupadas).map(
           ([fecha, total]) => ({ fecha, total }),
         );
@@ -753,12 +786,40 @@ export default function ResultadosView({
             .single(),
         ]);
 
+      const [comprasRes, planillaRes, costosOperativosRes] = await Promise.all([
+        supabase
+          .from("compras")
+          .select("monto, fecha")
+          .gte("fecha", desde.split("T")[0])
+          .lte("fecha", hasta.split("T")[0]),
+        supabase
+          .from("planilla")
+          .select("monto, fecha_pago")
+          .gte("fecha_pago", desde.split("T")[0])
+          .lte("fecha_pago", hasta.split("T")[0]),
+        supabase
+          .from("costos_operativos")
+          .select("monto, fecha")
+          .gte("fecha", desde.split("T")[0])
+          .lte("fecha", hasta.split("T")[0]),
+      ]);
+
+      let pagosProvViewQuery = supabase
+        .from("vw_pagos_proveedores_periodo")
+        .select("monto_pagado")
+        .eq("periodo_tipo", "dia")
+        .gte("periodo_inicio", `${desde.split("T")[0]} 00:00:00`)
+        .lte("periodo_inicio", `${hasta.split("T")[0]} 23:59:59`);
+      if (cajeroFiltro)
+        pagosProvViewQuery = pagosProvViewQuery.eq("cajero_id", cajeroFiltro);
+      const { data: pagosProvViewData } = await pagosProvViewQuery;
+
       const precioDolar = precioDolarRes.data?.valor
         ? Number(precioDolarRes.data.valor)
         : 0;
 
-      // Consultar movimientos de inventario (bebidas e insumos vendidos) en paralelo
-      const [bebidasMovRes, insumosMovRes] = await Promise.all([
+      // Consultar movimientos de inventario para bebidas vendidas
+      const [bebidasMovRes] = await Promise.all([
         supabase
           .from("movimientos_inventario")
           .select(
@@ -768,103 +829,126 @@ export default function ResultadosView({
           .eq("item_tipo", "producto")
           .gte("created_at", desdeInicio)
           .lte("created_at", hastaFin),
-        supabase
-          .from("movimientos_inventario")
-          .select(
-            "insumo_id, cantidad, costo_unitario, insumos(nombre, unidad)",
-          )
-          .eq("tipo", "venta")
-          .eq("item_tipo", "insumo")
-          .gte("created_at", desdeInicio)
-          .lte("created_at", hastaFin),
       ]);
       const bebidasMovData = bebidasMovRes.data || [];
-      const insumosMovData = insumosMovRes.data || [];
 
-      // Los datos ya vienen directamente de las funciones de paginación
-
-      const totalFacturas = factData.length;
-
-      // IMPORTANTE: Primero calcular los pagos únicos por factura
-      // porque este será el total de ventas real
-
-      // Total de todos los pagos (raw)
-      const totalPagosRaw = pagosData.reduce((s: number, p: any) => {
-        const val =
-          p.monto !== undefined && p.monto !== null
-            ? Number(String(p.monto).replace(/,/g, ""))
-            : 0;
-        return s + (isNaN(val) ? 0 : val);
-      }, 0);
-
-      // Agrupar pagos por número de factura para no contar facturas repetidas
-      const pagosPorFacturaMap = new Map<
-        string,
-        {
-          factura: string;
-          monto: number;
-          tipos: Set<string>;
-          cajero?: string;
-          fecha?: string;
-        }
-      >();
-      pagosData.forEach((p: any) => {
-        // Buscar el número de factura en ambos campos posibles
-        const facturaKey = p.factura_venta
-          ? String(p.factura_venta)
-          : p.factura
-            ? String(p.factura)
-            : `__no_fact_${p.id || Math.random()}`;
-        const monto =
-          p.monto !== undefined && p.monto !== null
-            ? Number(String(p.monto).replace(/,/g, ""))
-            : 0;
-        const tipo = p.tipo || "";
-        const fecha = p.fecha_hora || p.fecha || "";
-        const cajero = p.cajero || "";
-        if (pagosPorFacturaMap.has(facturaKey)) {
-          const entry = pagosPorFacturaMap.get(facturaKey)!;
-          entry.monto += isNaN(monto) ? 0 : monto;
-          if (tipo) entry.tipos.add(tipo);
-          // mantener la fecha más temprana
-          if (fecha && (!entry.fecha || fecha < entry.fecha))
-            entry.fecha = fecha;
-        } else {
-          const tiposSet = new Set<string>();
-          if (tipo) tiposSet.add(tipo);
-          pagosPorFacturaMap.set(facturaKey, {
-            factura: facturaKey,
-            monto: isNaN(monto) ? 0 : monto,
-            tipos: tiposSet,
-            cajero,
-            fecha,
-          });
-        }
-      });
-
-      const pagosUnicosArray = Array.from(pagosPorFacturaMap.values());
-      const totalPagosUnique = pagosUnicosArray.reduce(
-        (s, p) => s + (p.monto || 0),
-        0,
+      const ventasPeriodoValidas = (factData || []).filter(
+        (f: any) => String(f.tipo || "").toUpperCase() !== "CREDITO",
       );
-
-      // Usar el total de pagos únicos como el total de ventas real
-      // porque refleja correctamente las devoluciones y el dinero realmente recibido
-      const totalVentas = totalPagosUnique;
-
-      // Calcular total de ventas por facturas (para referencia)
-      const totalVentasPorFacturas = factData.reduce((s: number, f: any) => {
+      let totalFacturas = ventasPeriodoValidas.length;
+      let totalVentas = ventasPeriodoValidas.reduce((s: number, f: any) => {
         const val =
           f.total !== undefined && f.total !== null
-            ? parseFloat(String(f.total).replace(/,/g, ""))
+            ? Number(String(f.total).replace(/,/g, ""))
             : 0;
-        return s + (isNaN(val) ? 0 : val);
+        return s + (Number.isFinite(val) ? val : 0);
       }, 0);
 
-      const totalGastos = gastData.reduce(
+      let totalGastosVarios = gastData.reduce(
         (s: number, g: any) => s + parseFloat(g.monto || 0),
         0,
       );
+      let totalPagosProveedores = (pagosProvViewData || []).reduce(
+        (s: number, r: any) => s + Number(r.monto_pagado || 0),
+        0,
+      );
+      let totalGastos = totalGastosVarios + totalPagosProveedores;
+
+      let totalComprasEstado = (comprasRes.data || []).reduce(
+        (s: number, c: any) => s + parseFloat(String(c.monto || 0)),
+        0,
+      );
+      let totalPlanillaEstado = (planillaRes.data || []).reduce(
+        (s: number, p: any) => s + parseFloat(String(p.monto || 0)),
+        0,
+      );
+      let totalCostosOperativosEstado = (costosOperativosRes.data || []).reduce(
+        (s: number, c: any) => s + parseFloat(String(c.monto || 0)),
+        0,
+      );
+      let totalEgresosEstadoResultados =
+        totalComprasEstado +
+        totalGastos +
+        totalPlanillaEstado +
+        totalCostosOperativosEstado;
+      let utilidadNetaEstadoResultados =
+        totalVentas - totalEgresosEstadoResultados;
+
+      try {
+        let reporteVentasViewQuery = supabase
+          .from("vw_reporte_ventas_periodo")
+          .select("ventas_total, documentos_emitidos")
+          .eq("periodo_tipo", "dia")
+          .gte("periodo_inicio", `${desde.split("T")[0]} 00:00:00`)
+          .lte("periodo_inicio", `${hasta.split("T")[0]} 23:59:59`);
+        if (cajeroFiltro)
+          reporteVentasViewQuery = reporteVentasViewQuery.eq(
+            "cajero_id",
+            cajeroFiltro,
+          );
+
+        let estadoViewQuery = supabase
+          .from("vw_estado_resultados_periodo")
+          .select(
+            "ventas, compras, gastos_operativos, pagos_proveedores, planilla, costos_operativos_fijos, total_egresos, utilidad_neta",
+          )
+          .eq("periodo_tipo", "dia")
+          .gte("periodo_inicio", `${desde.split("T")[0]} 00:00:00`)
+          .lte("periodo_inicio", `${hasta.split("T")[0]} 23:59:59`);
+        if (cajeroFiltro)
+          estadoViewQuery = estadoViewQuery.eq("cajero_id", cajeroFiltro);
+
+        const [{ data: reporteVentasView }, { data: estadoView }] =
+          await Promise.all([reporteVentasViewQuery, estadoViewQuery]);
+
+        if (reporteVentasView && reporteVentasView.length > 0) {
+          totalVentas = reporteVentasView.reduce(
+            (sum: number, row: any) => sum + Number(row.ventas_total || 0),
+            0,
+          );
+          totalFacturas = reporteVentasView.reduce(
+            (sum: number, row: any) =>
+              sum + Number(row.documentos_emitidos || 0),
+            0,
+          );
+        }
+
+        if (estadoView && estadoView.length > 0) {
+          totalGastosVarios = estadoView.reduce(
+            (sum: number, row: any) => sum + Number(row.gastos_operativos || 0),
+            0,
+          );
+          totalPagosProveedores = estadoView.reduce(
+            (sum: number, row: any) => sum + Number(row.pagos_proveedores || 0),
+            0,
+          );
+          totalGastos = totalGastosVarios + totalPagosProveedores;
+          totalComprasEstado = estadoView.reduce(
+            (sum: number, row: any) => sum + Number(row.compras || 0),
+            0,
+          );
+          totalPlanillaEstado = estadoView.reduce(
+            (sum: number, row: any) => sum + Number(row.planilla || 0),
+            0,
+          );
+          totalCostosOperativosEstado = estadoView.reduce(
+            (sum: number, row: any) =>
+              sum + Number(row.costos_operativos_fijos || 0),
+            0,
+          );
+          totalEgresosEstadoResultados = estadoView.reduce(
+            (sum: number, row: any) => sum + Number(row.total_egresos || 0),
+            0,
+          );
+          utilidadNetaEstadoResultados = estadoView.reduce(
+            (sum: number, row: any) => sum + Number(row.utilidad_neta || 0),
+            0,
+          );
+        }
+      } catch {
+        // Fallback silencioso a cálculo previo en cliente
+      }
+
       const balanceReporte = totalVentas - totalGastos;
       const rentabilidadPercent =
         totalGastos > 0 ? (balanceReporte / totalGastos) * 100 : null;
@@ -890,21 +974,164 @@ export default function ResultadosView({
       });
       const dolaresLps = pagosPorTipo["dolares"] || 0;
 
-      // Debug: comparar facturas y pagos por factura (opcional)
+      const ventasPorDiaMap = ventasPeriodoValidas.reduce<Map<string, number>>(
+        (acc, v: any) => {
+          const fechaKey = String(v.fecha_hora || "").slice(0, 10);
+          if (!fechaKey) return acc;
+          acc.set(fechaKey, (acc.get(fechaKey) || 0) + Number(v.total || 0));
+          return acc;
+        },
+        new Map<string, number>(),
+      );
+      const ventasPorDiaReporte: Array<{ fecha: string; total: number }> =
+        Array.from(ventasPorDiaMap.entries())
+          .map(([fecha, total]) => ({ fecha, total }))
+          .sort((a, b) => a.fecha.localeCompare(b.fecha));
+
+      try {
+        let ventasDiaViewQuery = supabase
+          .from("vw_reporte_ventas_periodo")
+          .select("periodo_inicio, ventas_total")
+          .eq("periodo_tipo", "dia")
+          .gte("periodo_inicio", `${desde.split("T")[0]} 00:00:00`)
+          .lte("periodo_inicio", `${hasta.split("T")[0]} 23:59:59`)
+          .order("periodo_inicio", { ascending: true });
+        if (cajeroFiltro)
+          ventasDiaViewQuery = ventasDiaViewQuery.eq("cajero_id", cajeroFiltro);
+
+        const { data: ventasDiaView } = await ventasDiaViewQuery;
+        if (ventasDiaView && ventasDiaView.length > 0) {
+          ventasPorDiaReporte.length = 0;
+          ventasDiaView.forEach((row: any) => {
+            ventasPorDiaReporte.push({
+              fecha: String(row.periodo_inicio || "").slice(0, 10),
+              total: Number(row.ventas_total || 0),
+            });
+          });
+        }
+      } catch {
+        // Fallback silencioso a cálculo local
+      }
+
+      const toSqlLocal = (value: Date) => {
+        const y = value.getFullYear();
+        const m = String(value.getMonth() + 1).padStart(2, "0");
+        const d = String(value.getDate()).padStart(2, "0");
+        const hh = String(value.getHours()).padStart(2, "0");
+        const mm = String(value.getMinutes()).padStart(2, "0");
+        const ss = String(value.getSeconds()).padStart(2, "0");
+        return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
+      };
+
+      const desdeDate = new Date(desdeInicio.replace(" ", "T"));
+      const hastaDate = new Date(hastaFin.replace(" ", "T"));
+      // Período anterior = mes calendario completo anterior al mes de inicio del período actual
+      // Ej: actual 04-01→04-30 → anterior 03-01→03-31 | actual 03-01→03-31 → anterior 02-01→02-28
+      const inicioAnterior = new Date(
+        desdeDate.getFullYear(),
+        desdeDate.getMonth() - 1,
+        1,
+        0,
+        0,
+        0,
+      );
+      const finAnterior = new Date(
+        desdeDate.getFullYear(),
+        desdeDate.getMonth(),
+        0,
+        23,
+        59,
+        59,
+      );
+
+      const actualInicioSql = toSqlLocal(desdeDate);
+      const actualFinSql = toSqlLocal(hastaDate);
+      const anteriorInicioSql = toSqlLocal(inicioAnterior);
+      const anteriorFinSql = toSqlLocal(finAnterior);
+
+      const obtenerComparativaPeriodo = async (
+        inicioSql: string,
+        finSql: string,
+      ) => {
+        let estadoCompQuery = supabase
+          .from("vw_estado_resultados_periodo")
+          .select(
+            "ventas, compras, gastos_operativos, pagos_proveedores, planilla, costos_operativos_fijos",
+          )
+          .eq("periodo_tipo", "dia")
+          .gte("periodo_inicio", inicioSql)
+          .lte("periodo_inicio", finSql);
+        if (cajeroFiltro)
+          estadoCompQuery = estadoCompQuery.eq("cajero_id", cajeroFiltro);
+
+        const { data: estadoCompRows } = await estadoCompQuery;
+
+        const ventas = (estadoCompRows || []).reduce(
+          (s: number, row: any) => s + Number(row.ventas || 0),
+          0,
+        );
+        const compras = (estadoCompRows || []).reduce(
+          (s: number, row: any) => s + Number(row.compras || 0),
+          0,
+        );
+        const gastosOperativos = (estadoCompRows || []).reduce(
+          (s: number, row: any) => s + Number(row.gastos_operativos || 0),
+          0,
+        );
+        const pagosProveedores = (estadoCompRows || []).reduce(
+          (s: number, row: any) => s + Number(row.pagos_proveedores || 0),
+          0,
+        );
+        const planilla = (estadoCompRows || []).reduce(
+          (s: number, row: any) => s + Number(row.planilla || 0),
+          0,
+        );
+        const costosOperativosFijos = (estadoCompRows || []).reduce(
+          (s: number, row: any) => s + Number(row.costos_operativos_fijos || 0),
+          0,
+        );
+        const gastos =
+          compras +
+          gastosOperativos +
+          pagosProveedores +
+          planilla +
+          costosOperativosFijos;
+
+        return {
+          ventas,
+          compras,
+          gastosOperativos,
+          pagosProveedores,
+          planilla,
+          costosOperativosFijos,
+          gastos,
+          utilidad: ventas - gastos,
+        };
+      };
+
+      const [comparativaActual, comparativaAnterior] = await Promise.all([
+        obtenerComparativaPeriodo(actualInicioSql, actualFinSql),
+        obtenerComparativaPeriodo(anteriorInicioSql, anteriorFinSql),
+      ]);
+
+      const calcVarPct = (actual: number, anterior: number) => {
+        if (!anterior) return null;
+        return ((actual - anterior) / Math.abs(anterior)) * 100;
+      };
+      const variacionVentasPct = calcVarPct(
+        comparativaActual.ventas,
+        comparativaAnterior.ventas,
+      );
+      const variacionUtilidadPct = calcVarPct(
+        comparativaActual.utilidad,
+        comparativaAnterior.utilidad,
+      );
+
+      // Debug opcional
       try {
         console.debug(
-          "ReportePDF: facturas count",
-          factData.length,
-          "pagos count",
-          pagosData.length,
-        );
-        console.debug(
-          "ReportePDF: totalVentasPorFacturas",
-          totalVentasPorFacturas,
-          "totalPagosRaw (pagos)",
-          totalPagosRaw,
-          "totalPagosUnique/totalVentas",
-          totalPagosUnique,
+          "ReportePDF: ventas válidas",
+          ventasPeriodoValidas.length,
         );
       } catch (e) {}
 
@@ -1219,515 +1446,81 @@ export default function ResultadosView({
       </div>`;
       html += `</div>`;
 
-      // Sección de Pagos con gráfica
       html += `<div class="section">
-        <div class="section-title">💳 Distribución de Pagos</div>`;
+        <div class="section-title">🧾 Estado de Resultados</div>
+        <table>
+          <thead>
+            <tr>
+              <th>Concepto</th>
+              <th style="text-align:right;">Valor</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>Total ingresos (ventas)</td><td style="text-align:right;">L ${totalVentas.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td></tr>
+            <tr><td>Compras</td><td style="text-align:right;">L ${totalComprasEstado.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td></tr>
+            <tr><td>Gastos operativos (varios)</td><td style="text-align:right;">L ${totalGastosVarios.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td></tr>
+            <tr><td>Pagos a proveedores (CxP)</td><td style="text-align:right;">L ${totalPagosProveedores.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td></tr>
+            <tr><td>Planilla</td><td style="text-align:right;">L ${totalPlanillaEstado.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td></tr>
+            <tr><td>Costos operativos fijos</td><td style="text-align:right;">L ${totalCostosOperativosEstado.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td></tr>
+            <tr class="total-row"><td><strong>Total egresos</strong></td><td style="text-align:right;"><strong>L ${totalEgresosEstadoResultados.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></td></tr>
+            <tr class="total-row"><td><strong>Utilidad neta</strong></td><td style="text-align:right;color:${utilidadNetaEstadoResultados >= 0 ? "#16a34a" : "#dc2626"};"><strong>L ${Math.abs(utilidadNetaEstadoResultados).toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></td></tr>
+          </tbody>
+        </table>
+      </div>`;
 
+      html += `<div class="section">
+        <div class="section-title">📅 Ventas por Día</div>`;
+      if (ventasPorDiaReporte.length === 0) {
+        html += `<p style="padding:20px;text-align:center;color:#64748b;">No hay ventas en el rango seleccionado.</p>`;
+      } else {
+        const totalVentasDia = ventasPorDiaReporte.reduce(
+          (s, row) => s + row.total,
+          0,
+        );
+        html += `<table><thead><tr><th>Fecha</th><th style="text-align:right;">Total Ventas</th><th style="text-align:right;">% del período</th></tr></thead><tbody>`;
+        ventasPorDiaReporte.forEach((row) => {
+          const pct =
+            totalVentasDia > 0 ? (row.total / totalVentasDia) * 100 : 0;
+          html += `<tr><td>${row.fecha}</td><td style="text-align:right;">L ${row.total.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td><td style="text-align:right;">${pct.toFixed(1)}%</td></tr>`;
+        });
+        html += `<tr class="total-row"><td><strong>TOTAL</strong></td><td style="text-align:right;"><strong>L ${totalVentasDia.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></td><td style="text-align:right;"><strong>100%</strong></td></tr>`;
+        html += `</tbody></table>`;
+      }
+      html += `</div>`;
+
+      const tipos = ["efectivo", "transferencia", "tarjeta"];
+      html += `<div class="section">
+        <div class="section-title">💳 Tipo de Pago</div>`;
       if (precioDolar > 0) {
-        html += `<div style="background:#fef3c7;padding:15px;border-radius:10px;margin-bottom:20px;border-left:4px solid #f59e0b;">
+        html += `<div style="background:#fef3c7;padding:12px;border-radius:10px;margin-bottom:14px;border-left:4px solid #f59e0b;">
           <strong>💱 Tipo de Cambio:</strong> L ${precioDolar.toFixed(2)} por $1.00 USD
         </div>`;
       }
-
-      // Preparar datos para la gráfica
-      const pagoLabels: string[] = [];
-      const pagoMontos: number[] = [];
-
-      const tipos = ["efectivo", "transferencia", "tarjeta"];
-      tipos.forEach((t) => {
-        const m = Number(pagosPorTipo[t] || 0);
-        if (m > 0) {
-          const tLabel = t.charAt(0).toUpperCase() + t.slice(1);
-          pagoLabels.push(tLabel);
-          pagoMontos.push(m);
-        }
-      });
-
-      if (dolaresLps > 0) {
-        pagoLabels.push("Dólares");
-        pagoMontos.push(dolaresLps);
-      }
-
-      // Crear gráfica SVG tipo pastel para pagos
-      const totalPagosGrafica = pagoMontos.reduce((a, b) => a + b, 0);
-      const coloresPagos = [
-        "#10b981",
-        "#3b82f6",
-        "#f59e0b",
-        "#8b5cf6",
-        "#ec4899",
-        "#14b8a6",
-      ];
-      let currentAngle = 0;
-      let svgPathsPagos = "";
-      let legendPagos = "";
-
-      pagoMontos.forEach((monto, index) => {
-        const percentage = (monto / totalPagosGrafica) * 100;
-        const angle = (percentage / 100) * 360;
-        const endAngle = currentAngle + angle;
-
-        const startX =
-          150 + 120 * Math.cos(((currentAngle - 90) * Math.PI) / 180);
-        const startY =
-          150 + 120 * Math.sin(((currentAngle - 90) * Math.PI) / 180);
-        const endX = 150 + 120 * Math.cos(((endAngle - 90) * Math.PI) / 180);
-        const endY = 150 + 120 * Math.sin(((endAngle - 90) * Math.PI) / 180);
-
-        const largeArc = angle > 180 ? 1 : 0;
-
-        svgPathsPagos += `<path d="M 150 150 L ${startX} ${startY} A 120 120 0 ${largeArc} 1 ${endX} ${endY} Z" fill="${coloresPagos[index]}" stroke="#fff" stroke-width="2"/>`;
-
-        legendPagos += `<div style="display:flex;align-items:center;gap:8px;margin:5px 0;"><div style="width:16px;height:16px;background:${coloresPagos[index]};border-radius:3px;"></div><span style="font-size:13px;">${pagoLabels[index]}: ${percentage.toFixed(1)}%</span></div>`;
-
-        currentAngle = endAngle;
-      });
-
-      html += `<div style="display:flex;gap:30px;align-items:center;margin:20px 0;padding:20px;background:white;border-radius:10px;">
-        <svg width="300" height="300" viewBox="0 0 300 300" style="flex-shrink:0;">
-          <text x="150" y="20" text-anchor="middle" font-size="16" font-weight="bold" fill="#1a202c">Distribución de Pagos</text>
-          ${svgPathsPagos}
-        </svg>
-        <div style="flex:1;">${legendPagos}</div>
-      </div>`;
-
-      html += `<table><thead><tr><th>Tipo de Pago</th><th style="text-align:right;">Monto</th><th style="text-align:right;">% del Total</th></tr></thead><tbody>`;
-
-      tipos.forEach((t) => {
-        const m = Number(pagosPorTipo[t] || 0);
-        if (m > 0) {
-          const mFmt = m.toLocaleString("es-HN", { minimumFractionDigits: 2 });
-          const tLabel = t.charAt(0).toUpperCase() + t.slice(1);
-          const porcentaje = ((m / totalPagosUnique) * 100).toFixed(1);
-          html += `<tr><td><span class="badge badge-info">${tLabel}</span></td><td style="text-align:right;">L ${mFmt}</td><td style="text-align:right;">${porcentaje}%</td></tr>`;
-        }
-      });
-
-      if (dolaresUSD > 0) {
-        const dolaresUSDFmt = dolaresUSD.toLocaleString("es-HN", {
-          minimumFractionDigits: 2,
-        });
-        const dolaresLpsFmt = dolaresLps.toLocaleString("es-HN", {
-          minimumFractionDigits: 2,
-        });
-        const porcentaje = ((dolaresLps / totalPagosUnique) * 100).toFixed(1);
-        html += `<tr><td><span class="badge badge-success">Dólares</span></td><td style="text-align:right;"><b>$ ${dolaresUSDFmt}</b> <span style="color:#64748b;font-size:11px;">(L ${dolaresLpsFmt})</span></td><td style="text-align:right;">${porcentaje}%</td></tr>`;
-      }
-
-      Object.keys(pagosPorTipo).forEach((t) => {
-        if (![...tipos, "dolares"].includes(t)) {
-          const m = Number(pagosPorTipo[t] || 0);
-          if (m > 0) {
-            const mFmt = m.toLocaleString("es-HN", {
-              minimumFractionDigits: 2,
-            });
-            const tLabel = t.charAt(0).toUpperCase() + t.slice(1);
-            const porcentaje = ((m / totalPagosUnique) * 100).toFixed(1);
-            html += `<tr><td><span class="badge badge-info">${tLabel}</span></td><td style="text-align:right;">L ${mFmt}</td><td style="text-align:right;">${porcentaje}%</td></tr>`;
-          }
-        }
-      });
-
-      const totalPagosFmt = Number(totalPagosUnique || 0).toLocaleString(
-        "es-HN",
-        { minimumFractionDigits: 2 },
-      );
-      html += `<tr class="total-row"><td><strong>TOTAL PAGOS</strong></td><td style="text-align:right;"><strong>L ${totalPagosFmt}</strong></td><td style="text-align:right;"><strong>100%</strong></td></tr>`;
-      html += `</tbody></table></div>`;
-
-      // Sección VALOR DE VENTA POR CATEGORÍA con gráficas
-      html += `<div class="section">
-        <div class="section-title">🍗 Ventas por Categoría</div>`;
-
-      // Calcular ventas por categoría y subcategoría consultando tabla productos
-      const ventasPorCategoria: { [key: string]: number } = {
-        comida: 0,
-        bebida: 0,
-        complemento: 0,
-      };
-      const ventasPorSubcategoria: { [key: string]: number } = {};
-
-      // Obtener todos los IDs de productos únicos
-      const productosIds = new Set<string>();
-      factData.forEach((f: any) => {
-        if (f.productos) {
-          try {
-            // Parsear el string JSON de productos
-            const productosArray =
-              typeof f.productos === "string"
-                ? JSON.parse(f.productos)
-                : f.productos;
-
-            if (Array.isArray(productosArray)) {
-              productosArray.forEach((prod: any) => {
-                if (prod.id) productosIds.add(prod.id);
-              });
-            }
-          } catch (e) {
-            console.error("Error parseando productos:", e);
-          }
-        }
-      });
-
-      // Consultar información de productos desde la base de datos
-      const { data: productosInfo } = await supabase
-        .from("productos")
-        .select("id, tipo, subcategoria")
-        .in("id", Array.from(productosIds));
-
-      // Crear mapa de productos para búsqueda rápida
-      const productosMap = new Map();
-      if (productosInfo) {
-        productosInfo.forEach((p: any) => {
-          productosMap.set(p.id, {
-            tipo: p.tipo,
-            subcategoria: p.subcategoria,
-          });
-        });
-      }
-
-      // Crear mapa de pagos por factura para usar el monto real pagado
-      const montoRealPorFactura = new Map<string, number>();
-      pagosPorFacturaMap.forEach((value, key) => {
-        montoRealPorFactura.set(key, value.monto);
-      });
-
-      // Crear mapa de facturas por número para búsqueda rápida
-      const facturasMap = new Map<string, any>();
-      factData.forEach((f: any) => {
-        if (f.factura) {
-          facturasMap.set(String(f.factura), f);
-        }
-      });
-
-      // Calcular ventas SOLO de facturas que tienen pagos registrados
-      montoRealPorFactura.forEach((montoPagado, facturaKey) => {
-        const factura = facturasMap.get(facturaKey);
-
-        if (factura && factura.productos) {
-          try {
-            // Parsear el string JSON de productos
-            const productosArray =
-              typeof factura.productos === "string"
-                ? JSON.parse(factura.productos)
-                : factura.productos;
-
-            if (Array.isArray(productosArray) && productosArray.length > 0) {
-              // Calcular el total teórico sumando productos para distribuir proporcionalmente
-              let totalTeorico = 0;
-              const productosPorCategoria: { [key: string]: number } = {
-                comida: 0,
-                bebida: 0,
-                complemento: 0,
-              };
-              const productosPorSubcategoria: { [key: string]: number } = {};
-
-              productosArray.forEach((prod: any) => {
-                const productoInfo = productosMap.get(prod.id);
-                if (productoInfo) {
-                  const tipo = productoInfo.tipo || "comida";
-                  const cantidad = prod.cantidad || 1;
-                  const precio = prod.precio || 0;
-                  const totalProd = precio * cantidad;
-                  totalTeorico += totalProd;
-
-                  // Acumular por categoría
-                  if (productosPorCategoria[tipo] !== undefined) {
-                    productosPorCategoria[tipo] += totalProd;
-                  }
-
-                  // Acumular por subcategoría
-                  if (tipo === "comida" && productoInfo.subcategoria) {
-                    const subcat = productoInfo.subcategoria;
-                    productosPorSubcategoria[subcat] =
-                      (productosPorSubcategoria[subcat] || 0) + totalProd;
-                  }
-                }
-              });
-
-              // Distribuir el total REAL PAGADO proporcionalmente
-              if (totalTeorico > 0) {
-                const factor = montoPagado / totalTeorico;
-
-                // Aplicar factor a categorías
-                Object.keys(productosPorCategoria).forEach((tipo) => {
-                  if (ventasPorCategoria[tipo] !== undefined) {
-                    ventasPorCategoria[tipo] +=
-                      productosPorCategoria[tipo] * factor;
-                  }
-                });
-
-                // Aplicar factor a subcategorías
-                Object.keys(productosPorSubcategoria).forEach((subcat) => {
-                  ventasPorSubcategoria[subcat] =
-                    (ventasPorSubcategoria[subcat] || 0) +
-                    productosPorSubcategoria[subcat] * factor;
-                });
-              }
-            }
-          } catch (e) {
-            console.error("Error parseando productos para cálculo:", e);
-          }
-        }
-      });
-
-      // Preparar datos para gráficas
-      const categoriaLabels: string[] = [];
-      const categoriaMontos: number[] = [];
-
-      const categorias = [
-        { key: "comida", label: "Comidas", icon: "🍗" },
-        { key: "complemento", label: "Complementos", icon: "🍟" },
-        { key: "bebida", label: "Bebidas", icon: "🥤" },
-      ];
-
-      categorias.forEach(({ key }) => {
-        const total = ventasPorCategoria[key] || 0;
-        if (total > 0) {
-          categoriaLabels.push(key.charAt(0).toUpperCase() + key.slice(1));
-          categoriaMontos.push(total);
-        }
-      });
-
-      // Crear gráfica SVG tipo pastel para categorías
-      const totalCategoriasGrafica = categoriaMontos.reduce((a, b) => a + b, 0);
-      const coloresCategorias = [
-        "#f59e0b",
-        "#10b981",
-        "#3b82f6",
-        "#ec4899",
-        "#8b5cf6",
-      ];
-      let currentAngleCat = 0;
-      let svgPathsCat = "";
-      let legendCat = "";
-
-      categoriaMontos.forEach((monto, index) => {
-        const percentage = (monto / totalCategoriasGrafica) * 100;
-        const angle = (percentage / 100) * 360;
-        const endAngle = currentAngleCat + angle;
-
-        const startX =
-          150 + 120 * Math.cos(((currentAngleCat - 90) * Math.PI) / 180);
-        const startY =
-          150 + 120 * Math.sin(((currentAngleCat - 90) * Math.PI) / 180);
-        const endX = 150 + 120 * Math.cos(((endAngle - 90) * Math.PI) / 180);
-        const endY = 150 + 120 * Math.sin(((endAngle - 90) * Math.PI) / 180);
-
-        const largeArc = angle > 180 ? 1 : 0;
-
-        svgPathsCat += `<path d="M 150 150 L ${startX} ${startY} A 120 120 0 ${largeArc} 1 ${endX} ${endY} Z" fill="${coloresCategorias[index]}" stroke="#fff" stroke-width="2"/>`;
-
-        legendCat += `<div style="display:flex;align-items:center;gap:8px;margin:5px 0;"><div style="width:16px;height:16px;background:${coloresCategorias[index]};border-radius:3px;"></div><span style="font-size:13px;">${categoriaLabels[index]}: ${percentage.toFixed(1)}%</span></div>`;
-
-        currentAngleCat = endAngle;
-      });
-
-      html += `<div style="display:flex;gap:30px;align-items:center;margin:20px 0;padding:20px;background:white;border-radius:10px;">
-        <svg width="300" height="300" viewBox="0 0 300 300" style="flex-shrink:0;">
-          <text x="150" y="20" text-anchor="middle" font-size="16" font-weight="bold" fill="#1a202c">Ventas por Categoría</text>
-          ${svgPathsCat}
-        </svg>
-        <div style="flex:1;">${legendCat}</div>
-      </div>`;
-
-      // Tabla de subcategorías de COMIDA
-      const subcategorias = Object.keys(ventasPorSubcategoria).sort();
-      if (subcategorias.length > 0) {
-        html += `<h3 style="margin:30px 0 15px;color:#1a202c;font-size:18px;font-weight:700;">🍗 Comidas por Subcategoría</h3>`;
-
-        // Crear gráfica SVG tipo pastel para subcategorías
-        const subcatMontos = subcategorias.map((s) => ventasPorSubcategoria[s]);
-        const totalSubcatGrafica = subcatMontos.reduce((a, b) => a + b, 0);
-        const coloresSubcat = [
-          "#667eea",
-          "#f59e0b",
-          "#10b981",
-          "#3b82f6",
-          "#ec4899",
-          "#8b5cf6",
-          "#14b8a6",
-          "#f97316",
-          "#06b6d4",
-          "#84cc16",
-          "#a855f7",
-          "#0ea5e9",
-          "#22c55e",
-          "#eab308",
-          "#ef4444",
-        ];
-        let currentAngleSub = 0;
-        let svgPathsSub = "";
-        let legendSub = "";
-
-        subcatMontos.forEach((monto, index) => {
-          const percentage = (monto / totalSubcatGrafica) * 100;
-          const angle = (percentage / 100) * 360;
-          const endAngle = currentAngleSub + angle;
-
-          const startX =
-            150 + 120 * Math.cos(((currentAngleSub - 90) * Math.PI) / 180);
-          const startY =
-            150 + 120 * Math.sin(((currentAngleSub - 90) * Math.PI) / 180);
-          const endX = 150 + 120 * Math.cos(((endAngle - 90) * Math.PI) / 180);
-          const endY = 150 + 120 * Math.sin(((endAngle - 90) * Math.PI) / 180);
-
-          const largeArc = angle > 180 ? 1 : 0;
-
-          svgPathsSub += `<path d="M 150 150 L ${startX} ${startY} A 120 120 0 ${largeArc} 1 ${endX} ${endY} Z" fill="${coloresSubcat[index % coloresSubcat.length]}" stroke="#fff" stroke-width="2"/>`;
-
-          legendSub += `<div style="display:flex;align-items:center;gap:6px;margin:3px 0;"><div style="width:14px;height:14px;background:${coloresSubcat[index % coloresSubcat.length]};border-radius:3px;"></div><span style="font-size:11px;">${subcategorias[index]}: ${percentage.toFixed(1)}%</span></div>`;
-
-          currentAngleSub = endAngle;
-        });
-
-        html += `<div style="display:flex;gap:20px;align-items:center;margin:20px 0;padding:20px;background:white;border-radius:10px;">
-          <svg width="280" height="280" viewBox="0 0 300 300" style="flex-shrink:0;">
-            <text x="150" y="20" text-anchor="middle" font-size="16" font-weight="bold" fill="#1a202c">Subcategorías</text>
-            ${svgPathsSub}
-          </svg>
-          <div style="flex:1;max-height:260px;overflow-y:auto;">${legendSub}</div>
-        </div>`;
-
-        html += `<table><thead><tr><th>Subcategoría</th><th style="text-align:right;">Total Ventas</th><th style="text-align:right;">% del Total Comidas</th></tr></thead><tbody>`;
-        const totalComida = ventasPorCategoria["comida"] || 0;
-        subcategorias.forEach((subcat) => {
-          const total = ventasPorSubcategoria[subcat];
-          const totalFmt = total.toLocaleString("es-HN", {
-            minimumFractionDigits: 2,
-          });
-          const porcentaje =
-            totalComida > 0 ? ((total / totalComida) * 100).toFixed(1) : "0";
-          html += `<tr><td>${subcat}</td><td style="text-align:right;">L ${totalFmt}</td><td style="text-align:right;">${porcentaje}%</td></tr>`;
-        });
-        html += `</tbody></table>`;
-      }
-
-      // Tabla de categorías principales
-      html += `<h3 style="margin:30px 0 15px;color:#1a202c;font-size:18px;font-weight:700;">📊 Resumen por Categoría</h3>`;
-      html += `<table><thead><tr><th>Categoría</th><th style="text-align:right;">Total Ventas</th><th style="text-align:right;">% del Total</th></tr></thead><tbody>`;
-
-      const totalCategorias = Object.values(ventasPorCategoria).reduce(
-        (sum, val) => sum + val,
+      const totalPagosCalculado = Object.values(pagosPorTipo).reduce(
+        (s, v) => s + Number(v || 0),
         0,
       );
-
-      categorias.forEach(({ key, label, icon }) => {
-        const total = ventasPorCategoria[key] || 0;
-        if (total > 0) {
-          const totalFmt = total.toLocaleString("es-HN", {
-            minimumFractionDigits: 2,
-          });
-          const porcentaje = ((total / totalCategorias) * 100).toFixed(1);
-          html += `<tr><td>${icon} ${label}</td><td style="text-align:right;">L ${totalFmt}</td><td style="text-align:right;">${porcentaje}%</td></tr>`;
+      html += `<table><thead><tr><th>Tipo de Pago</th><th style="text-align:right;">Monto</th><th style="text-align:right;">% del Total</th></tr></thead><tbody>`;
+      tipos.forEach((t) => {
+        const m = Number(pagosPorTipo[t] || 0);
+        if (m > 0) {
+          const tLabel = t.charAt(0).toUpperCase() + t.slice(1);
+          const porcentaje =
+            totalPagosCalculado > 0
+              ? ((m / totalPagosCalculado) * 100).toFixed(1)
+              : "0.0";
+          html += `<tr><td><span class="badge badge-info">${tLabel}</span></td><td style="text-align:right;">L ${m.toLocaleString("es-HN", { minimumFractionDigits: 2 })}</td><td style="text-align:right;">${porcentaje}%</td></tr>`;
         }
       });
-
-      const totalCategoriasFmt = totalCategorias.toLocaleString("es-HN", {
-        minimumFractionDigits: 2,
-      });
-      html += `<tr class="total-row"><td><strong>TOTAL GENERAL</strong></td><td style="text-align:right;"><strong>L ${totalCategoriasFmt}</strong></td><td style="text-align:right;"><strong>100%</strong></td></tr>`;
-      html += `</tbody></table></div>`;
-
-      // ── Unidades vendidas por producto de comida ─────────────────────────────
-      // Iteramos TODAS las facturas del período directamente (sin filtrar por pago
-      // ni aplicar ningún factor de proporcionalidad: las unidades son conteo puro).
-      const unidadesPorProducto = new Map<
-        string,
-        { nombre: string; unidades: number; total: number }
-      >();
-
-      factData.forEach((factura: any) => {
-        if (!factura.productos) return;
-        try {
-          const productosArray =
-            typeof factura.productos === "string"
-              ? JSON.parse(factura.productos)
-              : factura.productos;
-          if (!Array.isArray(productosArray)) return;
-
-          productosArray.forEach((prod: any) => {
-            const info = productosMap.get(prod.id);
-            if (!info || info.tipo !== "comida") return;
-
-            const nombre: string = prod.nombre || prod.id || "Desconocido";
-            const cantidad: number = Number(prod.cantidad) || 1;
-            const precioUnit: number = Number(prod.precio) || 0;
-            const totalProd: number = precioUnit * cantidad;
-
-            const entry = unidadesPorProducto.get(nombre);
-            if (entry) {
-              entry.unidades += cantidad;
-              entry.total += totalProd;
-            } else {
-              unidadesPorProducto.set(nombre, {
-                nombre,
-                unidades: cantidad,
-                total: totalProd,
-              });
-            }
-          });
-        } catch (e) {
-          /* ignorar JSON malformado */
-        }
-      });
-
-      const productosComidaOrdenados = Array.from(
-        unidadesPorProducto.values(),
-      ).sort((a, b) => b.unidades - a.unidades);
-
-      if (productosComidaOrdenados.length > 0) {
-        const totalUnidadesComida = productosComidaOrdenados.reduce(
-          (s, p) => s + p.unidades,
-          0,
-        );
-        const totalIngresosComida = productosComidaOrdenados.reduce(
-          (s, p) => s + p.total,
-          0,
-        );
-        const maxUnidades = productosComidaOrdenados[0].unidades;
-
-        html += `<div class="section">
-          <div class="section-title">🍗 Unidades Vendidas — Comida</div>`;
-        html += `<table><thead><tr>
-          <th>#</th>
-          <th>Producto</th>
-          <th style="text-align:center;">Unidades</th>
-          <th style="text-align:right;">% del Total</th>
-          <th style="text-align:right;">Total Ingresos</th>
-        </tr></thead><tbody>`;
-
-        productosComidaOrdenados.forEach((p, i) => {
-          const pct =
-            totalUnidadesComida > 0
-              ? ((p.unidades / totalUnidadesComida) * 100).toFixed(1)
-              : "0";
-          const barWidth =
-            maxUnidades > 0 ? Math.round((p.unidades / maxUnidades) * 100) : 0;
-          const rowBg = i % 2 === 0 ? "" : "background:#f8fafc;";
-          html += `<tr style="${rowBg}">
-            <td style="color:#64748b;font-size:13px;">${i + 1}</td>
-            <td style="font-weight:600;">${p.nombre}
-              <div style="height:6px;background:#e2e8f0;border-radius:3px;margin-top:4px;">
-                <div style="height:6px;background:#f59e0b;border-radius:3px;width:${barWidth}%;-webkit-print-color-adjust:exact;print-color-adjust:exact;"></div>
-              </div>
-            </td>
-            <td style="text-align:center;font-weight:800;font-size:20px;color:#f59e0b;">${p.unidades}</td>
-            <td style="text-align:right;">${pct}%</td>
-            <td style="text-align:right;">L ${p.total.toLocaleString("es-HN", { minimumFractionDigits: 2 })}</td>
-          </tr>`;
-        });
-
-        html += `<tr class="total-row">
-          <td></td>
-          <td><strong>TOTAL</strong></td>
-          <td style="text-align:center;font-weight:800;font-size:22px;">🍗 ${totalUnidadesComida}</td>
-          <td style="text-align:right;"><strong>100%</strong></td>
-          <td style="text-align:right;"><strong>L ${totalIngresosComida.toLocaleString("es-HN", { minimumFractionDigits: 2 })}</strong></td>
-        </tr>`;
-        html += `</tbody></table></div>`;
+      if (dolaresUSD > 0 || dolaresLps > 0) {
+        const porcentaje =
+          totalPagosCalculado > 0
+            ? ((dolaresLps / totalPagosCalculado) * 100).toFixed(1)
+            : "0.0";
+        html += `<tr><td><span class="badge badge-success">Dólares</span></td><td style="text-align:right;"><b>$ ${dolaresUSD.toLocaleString("es-HN", { minimumFractionDigits: 2 })}</b> <span style="color:#64748b;font-size:11px;">(L ${dolaresLps.toLocaleString("es-HN", { minimumFractionDigits: 2 })})</span></td><td style="text-align:right;">${porcentaje}%</td></tr>`;
       }
-      // ─────────────────────────────────────────────────────────────────────────
+      html += `<tr class="total-row"><td><strong>TOTAL PAGOS</strong></td><td style="text-align:right;"><strong>L ${totalPagosCalculado.toLocaleString("es-HN", { minimumFractionDigits: 2 })}</strong></td><td style="text-align:right;"><strong>100%</strong></td></tr>`;
+      html += `</tbody></table></div>`;
 
       html += `<div class="section">
         <div class="section-title">🔐 Historial de Cierres de Caja</div>`;
@@ -1906,54 +1699,205 @@ export default function ResultadosView({
       }
       html += `</div>`;
 
-      // ── Sección Insumos Consumidos (movimientos_inventario tipo=venta, item_tipo=insumo) ──
-      const insumosConsumoMap = new Map<
+      const comidasMap = new Map<
         string,
-        {
-          nombre: string;
-          unidad: string;
-          cantidad: number;
-          costoUnitario: number;
-          costoTotal: number;
-        }
+        { nombre: string; cantidad: number; precio: number }
       >();
-      (insumosMovData as any[]).forEach((m: any) => {
-        const ins = Array.isArray(m.insumos) ? m.insumos[0] : m.insumos;
-        const nombre = ins?.nombre || m.insumo_id || "Desconocido";
-        const unidad = ins?.unidad || "";
-        const cantidad = parseFloat(m.cantidad || 0);
-        const costoUnitario = parseFloat(m.costo_unitario || 0);
-        if (insumosConsumoMap.has(nombre)) {
-          const entry = insumosConsumoMap.get(nombre)!;
-          entry.cantidad += cantidad;
-          entry.costoTotal += cantidad * costoUnitario;
-        } else {
-          insumosConsumoMap.set(nombre, {
-            nombre,
-            unidad,
-            cantidad,
-            costoUnitario,
-            costoTotal: cantidad * costoUnitario,
-          });
-        }
-      });
 
-      html += `<div class="section"><div class="section-title">🧂 Insumos Consumidos</div>`;
-      if (insumosConsumoMap.size === 0) {
-        html += `<p style="padding:20px;text-align:center;color:#64748b;">No hay consumo de insumos en el rango seleccionado.</p>`;
+      try {
+        let comidasViewQuery = supabase
+          .from("vw_comidas_vendidas_periodo")
+          .select("nombre_producto, cantidad_vendida, precio_venta_unitario")
+          .eq("periodo_tipo", "dia")
+          .gte("periodo_inicio", `${desde.split("T")[0]} 00:00:00`)
+          .lte("periodo_inicio", `${hasta.split("T")[0]} 23:59:59`);
+
+        if (cajeroFiltro) {
+          comidasViewQuery = comidasViewQuery.eq("cajero_id", cajeroFiltro);
+        }
+
+        const { data: comidasViewData, error: comidasViewError } =
+          await comidasViewQuery;
+        if (comidasViewError) throw comidasViewError;
+
+        (comidasViewData || []).forEach((r: any) => {
+          const nombre = String(r.nombre_producto || "Comida");
+          const cantidad = Number(r.cantidad_vendida || 0);
+          const precio = Number(r.precio_venta_unitario || 0);
+          if (!Number.isFinite(cantidad) || cantidad <= 0) return;
+          if (comidasMap.has(nombre)) {
+            const row = comidasMap.get(nombre)!;
+            row.cantidad += cantidad;
+            row.precio = precio;
+          } else {
+            comidasMap.set(nombre, { nombre, cantidad, precio });
+          }
+        });
+      } catch {
+        const idsProductosVentas = new Set<string>();
+        ventasPeriodoValidas.forEach((v: any) => {
+          if (!v.productos) return;
+          try {
+            const arr =
+              typeof v.productos === "string"
+                ? JSON.parse(v.productos)
+                : v.productos;
+            if (!Array.isArray(arr)) return;
+            arr.forEach((p: any) => {
+              if (p?.id) idsProductosVentas.add(String(p.id));
+            });
+          } catch {
+            // ignore
+          }
+        });
+
+        const { data: productosCatalogo } = await supabase
+          .from("productos")
+          .select("id, tipo, nombre")
+          .in("id", Array.from(idsProductosVentas));
+
+        const tipoPorProductoId = new Map<string, string>();
+        (productosCatalogo || []).forEach((p: any) => {
+          tipoPorProductoId.set(String(p.id), String(p.tipo || ""));
+        });
+
+        ventasPeriodoValidas.forEach((v: any) => {
+          if (!v.productos) return;
+          try {
+            const arr =
+              typeof v.productos === "string"
+                ? JSON.parse(v.productos)
+                : v.productos;
+            if (!Array.isArray(arr)) return;
+
+            arr.forEach((p: any) => {
+              const pid = String(p?.id || "");
+              if (!pid) return;
+              const tipoInv = (tipoPorProductoId.get(pid) || "").toLowerCase();
+              if (tipoInv !== "comida") return;
+
+              const nombre = String(p?.nombre || "Comida");
+              const cantidad = Number(p?.cantidad || 0);
+              const precio = Number(p?.precio || 0);
+              if (!Number.isFinite(cantidad) || cantidad <= 0) return;
+
+              if (comidasMap.has(nombre)) {
+                const row = comidasMap.get(nombre)!;
+                row.cantidad += cantidad;
+              } else {
+                comidasMap.set(nombre, { nombre, cantidad, precio });
+              }
+            });
+          } catch {
+            // ignore
+          }
+        });
+      }
+
+      html += `<div class="section"><div class="section-title">🍗 Comidas Vendidas</div>`;
+      if (comidasMap.size === 0) {
+        html += `<p style="padding:20px;text-align:center;color:#64748b;">No hay ventas de productos tipo comida en el rango seleccionado.</p>`;
       } else {
-        html += `<table><thead><tr><th>Insumo</th><th>Unidad</th><th style="text-align:right;">Cantidad</th><th style="text-align:right;">Costo Unitario</th><th style="text-align:right;">Total Costo</th></tr></thead><tbody>`;
-        let totalInsumosCosto = 0;
-        insumosConsumoMap.forEach(
-          ({ nombre, unidad, cantidad, costoUnitario, costoTotal }) => {
-            totalInsumosCosto += costoTotal;
-            html += `<tr><td>${nombre}</td><td>${unidad}</td><td style="text-align:right;">${cantidad.toFixed(3)}</td><td style="text-align:right;">L ${costoUnitario.toLocaleString("es-HN", { minimumFractionDigits: 2 })}</td><td style="text-align:right;">L ${costoTotal.toLocaleString("es-HN", { minimumFractionDigits: 2 })}</td></tr>`;
-          },
-        );
-        html += `<tr class="total-row"><td colspan="4"><strong>TOTAL INSUMOS</strong></td><td style="text-align:right;"><strong>L ${totalInsumosCosto.toLocaleString("es-HN", { minimumFractionDigits: 2 })}</strong></td></tr>`;
+        html += `<table><thead><tr><th>Comida</th><th style="text-align:right;">Cantidad</th><th style="text-align:right;">Precio Venta</th><th style="text-align:right;">Total</th></tr></thead><tbody>`;
+        let totalComidasVentas = 0;
+        comidasMap.forEach(({ nombre, cantidad, precio }) => {
+          const total = cantidad * precio;
+          totalComidasVentas += total;
+          html += `<tr><td>${nombre}</td><td style="text-align:right;">${cantidad.toFixed(2)}</td><td style="text-align:right;">L ${precio.toLocaleString("es-HN", { minimumFractionDigits: 2 })}</td><td style="text-align:right;">L ${total.toLocaleString("es-HN", { minimumFractionDigits: 2 })}</td></tr>`;
+        });
+        html += `<tr class="total-row"><td colspan="3"><strong>TOTAL COMIDAS</strong></td><td style="text-align:right;"><strong>L ${totalComidasVentas.toLocaleString("es-HN", { minimumFractionDigits: 2 })}</strong></td></tr>`;
         html += `</tbody></table>`;
       }
       html += `</div>`;
+
+      html += `<div class="section">
+        <div class="section-title">📆 Comparativa Mes Actual vs Mes Anterior</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
+          <div style="background:#eef2ff;padding:12px 14px;border-radius:10px;border:1px solid #c7d2fe;">
+            <div style="font-size:12px;color:#475569;font-weight:700;margin-bottom:6px;">Período actual</div>
+            <div style="font-size:14px;color:#1e293b;">${actualInicioSql.slice(0, 10)} al ${actualFinSql.slice(0, 10)}</div>
+          </div>
+          <div style="background:#f8fafc;padding:12px 14px;border-radius:10px;border:1px solid #e2e8f0;">
+            <div style="font-size:12px;color:#475569;font-weight:700;margin-bottom:6px;">Período anterior</div>
+            <div style="font-size:14px;color:#1e293b;">${anteriorInicioSql.slice(0, 10)} al ${anteriorFinSql.slice(0, 10)}</div>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Indicador</th>
+              <th style="text-align:right;">Actual</th>
+              <th style="text-align:right;">Anterior</th>
+              <th style="text-align:right;">Variación</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Ventas</td>
+              <td style="text-align:right;">L ${comparativaActual.ventas.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+              <td style="text-align:right;">L ${comparativaAnterior.ventas.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+              <td style="text-align:right;color:${(variacionVentasPct || 0) >= 0 ? "#16a34a" : "#dc2626"};">${variacionVentasPct === null ? "N/A" : `${variacionVentasPct.toFixed(1)}%`}</td>
+            </tr>
+            <tr>
+              <td>Gastos</td>
+              <td style="text-align:right;">L ${comparativaActual.gastos.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+              <td style="text-align:right;">L ${comparativaAnterior.gastos.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+              <td style="text-align:right;">L ${(comparativaActual.gastos - comparativaAnterior.gastos).toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+            </tr>
+            <tr class="total-row">
+              <td><strong>Utilidad</strong></td>
+              <td style="text-align:right;"><strong>L ${comparativaActual.utilidad.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></td>
+              <td style="text-align:right;"><strong>L ${comparativaAnterior.utilidad.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></td>
+              <td style="text-align:right;color:${(variacionUtilidadPct || 0) >= 0 ? "#16a34a" : "#dc2626"};"><strong>${variacionUtilidadPct === null ? "N/A" : `${variacionUtilidadPct.toFixed(1)}%`}</strong></td>
+            </tr>
+          </tbody>
+        </table>
+        <div style="margin-top:14px;background:#f8fafc;padding:12px;border-radius:10px;border:1px solid #e2e8f0;">
+          <div style="font-size:12px;color:#475569;font-weight:700;margin-bottom:8px;">Desglose de gastos</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Rubro</th>
+                <th style="text-align:right;">Actual</th>
+                <th style="text-align:right;">Anterior</th>
+                <th style="text-align:right;">Variación</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Compras</td>
+                <td style="text-align:right;">L ${comparativaActual.compras.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                <td style="text-align:right;">L ${comparativaAnterior.compras.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                <td style="text-align:right;">L ${(comparativaActual.compras - comparativaAnterior.compras).toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+              </tr>
+              <tr>
+                <td>Gastos operativos (varios)</td>
+                <td style="text-align:right;">L ${comparativaActual.gastosOperativos.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                <td style="text-align:right;">L ${comparativaAnterior.gastosOperativos.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                <td style="text-align:right;">L ${(comparativaActual.gastosOperativos - comparativaAnterior.gastosOperativos).toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+              </tr>
+              <tr>
+                <td>Pagos a proveedores (CxP)</td>
+                <td style="text-align:right;">L ${comparativaActual.pagosProveedores.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                <td style="text-align:right;">L ${comparativaAnterior.pagosProveedores.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                <td style="text-align:right;">L ${(comparativaActual.pagosProveedores - comparativaAnterior.pagosProveedores).toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+              </tr>
+              <tr>
+                <td>Planilla</td>
+                <td style="text-align:right;">L ${comparativaActual.planilla.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                <td style="text-align:right;">L ${comparativaAnterior.planilla.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                <td style="text-align:right;">L ${(comparativaActual.planilla - comparativaAnterior.planilla).toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+              </tr>
+              <tr>
+                <td>Costos operativos fijos</td>
+                <td style="text-align:right;">L ${comparativaActual.costosOperativosFijos.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                <td style="text-align:right;">L ${comparativaAnterior.costosOperativosFijos.toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                <td style="text-align:right;">L ${(comparativaActual.costosOperativosFijos - comparativaAnterior.costosOperativosFijos).toLocaleString("es-HN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>`;
 
       // Cerrar contenedor
       html += `</div></div>`;
@@ -3431,7 +3375,14 @@ export default function ResultadosView({
               padding: "20px",
               background: "#f8fafc",
               borderRadius: "0 0 12px 12px",
-              minHeight: turnosResumen.length === 0 ? "200px" : "auto",
+              minHeight:
+                turnosResumen.filter(
+                  (t) =>
+                    !t.fecha_cierre ||
+                    new Date(t.fecha_cierre) > new Date(Date.now() + 60000),
+                ).length === 0
+                  ? "200px"
+                  : "auto",
             }}
           >
             {turnosLoading ? (
@@ -3446,7 +3397,11 @@ export default function ResultadosView({
                 <div style={{ fontSize: "32px", marginBottom: "12px" }}>⏳</div>
                 <div>Cargando turnos...</div>
               </div>
-            ) : turnosResumen.length === 0 ? (
+            ) : turnosResumen.filter(
+                (t) =>
+                  !t.fecha_cierre ||
+                  new Date(t.fecha_cierre) > new Date(Date.now() + 60000),
+              ).length === 0 ? (
               <div
                 style={{
                   gridColumn: "1 / -1",
@@ -3459,503 +3414,513 @@ export default function ResultadosView({
                 <div>Sin turnos registrados</div>
               </div>
             ) : (
-              turnosResumen.map((t) => {
-                const estaAbierto =
-                  !t.fecha_cierre ||
-                  new Date(t.fecha_cierre) > new Date(Date.now() + 60000);
+              turnosResumen
+                .filter(
+                  (t) =>
+                    !t.fecha_cierre ||
+                    new Date(t.fecha_cierre) > new Date(Date.now() + 60000),
+                )
+                .map((t) => {
+                  const estaAbierto =
+                    !t.fecha_cierre ||
+                    new Date(t.fecha_cierre) > new Date(Date.now() + 60000);
 
-                const formatearFecha = (fecha: string) => {
-                  if (!fecha) return "—";
-                  return new Date(fecha)
-                    .toLocaleString("es-HN", {
-                      year: "numeric",
-                      month: "2-digit",
-                      day: "2-digit",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })
-                    .replace(",", "");
-                };
+                  const formatearFecha = (fecha: string) => {
+                    if (!fecha) return "—";
+                    return new Date(fecha)
+                      .toLocaleString("es-HN", {
+                        year: "numeric",
+                        month: "2-digit",
+                        day: "2-digit",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })
+                      .replace(",", "");
+                  };
 
-                return (
-                  <div
-                    key={t.apertura_id}
-                    style={{
-                      background: "#fff",
-                      borderRadius: "14px",
-                      overflow: "hidden",
-                      boxShadow: "0 4px 12px rgba(0, 0, 0, 0.08)",
-                      border: estaAbierto
-                        ? "2px solid #22c55e"
-                        : "1px solid #e2e8f0",
-                      transition:
-                        "transform 0.2s, box-shadow 0.2s, border-color 0.2s",
-                      cursor: "pointer",
-                    }}
-                    onMouseEnter={(e) => {
-                      const el = e.currentTarget as HTMLDivElement;
-                      el.style.transform = "translateY(-4px)";
-                      el.style.boxShadow = "0 12px 24px rgba(0, 0, 0, 0.12)";
-                    }}
-                    onMouseLeave={(e) => {
-                      const el = e.currentTarget as HTMLDivElement;
-                      el.style.transform = "translateY(0)";
-                      el.style.boxShadow = "0 4px 12px rgba(0, 0, 0, 0.08)";
-                    }}
-                  >
-                    {/* Card Header */}
+                  return (
                     <div
+                      key={t.apertura_id}
                       style={{
-                        background: estaAbierto
-                          ? "linear-gradient(135deg, #22c55e 0%, #16a34a 100%)"
-                          : "linear-gradient(135deg, #0b4f9a 0%, #1976d2 100%)",
-                        color: "#fff",
-                        padding: "16px",
-                        position: "relative",
+                        background: "#fff",
+                        borderRadius: "14px",
+                        overflow: "hidden",
+                        boxShadow: "0 4px 12px rgba(0, 0, 0, 0.08)",
+                        border: estaAbierto
+                          ? "2px solid #22c55e"
+                          : "1px solid #e2e8f0",
+                        transition:
+                          "transform 0.2s, box-shadow 0.2s, border-color 0.2s",
+                        cursor: "pointer",
+                      }}
+                      onMouseEnter={(e) => {
+                        const el = e.currentTarget as HTMLDivElement;
+                        el.style.transform = "translateY(-4px)";
+                        el.style.boxShadow = "0 12px 24px rgba(0, 0, 0, 0.12)";
+                      }}
+                      onMouseLeave={(e) => {
+                        const el = e.currentTarget as HTMLDivElement;
+                        el.style.transform = "translateY(0)";
+                        el.style.boxShadow = "0 4px 12px rgba(0, 0, 0, 0.08)";
                       }}
                     >
+                      {/* Card Header */}
                       <div
                         style={{
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          marginBottom: "8px",
+                          background: estaAbierto
+                            ? "linear-gradient(135deg, #22c55e 0%, #16a34a 100%)"
+                            : "linear-gradient(135deg, #0b4f9a 0%, #1976d2 100%)",
+                          color: "#fff",
+                          padding: "16px",
+                          position: "relative",
                         }}
                       >
                         <div
                           style={{
                             display: "flex",
                             alignItems: "center",
-                            gap: "10px",
+                            justifyContent: "space-between",
+                            marginBottom: "8px",
                           }}
                         >
                           <div
                             style={{
-                              width: "36px",
-                              height: "36px",
-                              borderRadius: "50%",
-                              background: "rgba(255,255,255,0.25)",
                               display: "flex",
                               alignItems: "center",
-                              justifyContent: "center",
-                              fontWeight: 800,
-                              fontSize: "16px",
+                              gap: "10px",
                             }}
                           >
-                            {(t.nombre_cajero || "?").charAt(0).toUpperCase()}
-                          </div>
-                          <div>
                             <div
                               style={{
+                                width: "36px",
+                                height: "36px",
+                                borderRadius: "50%",
+                                background: "rgba(255,255,255,0.25)",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
                                 fontWeight: 800,
-                                fontSize: "15px",
+                                fontSize: "16px",
                               }}
                             >
-                              {t.nombre_cajero}
+                              {(t.nombre_cajero || "?").charAt(0).toUpperCase()}
                             </div>
-                            <div
-                              style={{
-                                fontSize: "11px",
-                                opacity: 0.9,
-                                fontWeight: 600,
-                              }}
-                            >
-                              Caja {t.caja}
+                            <div>
+                              <div
+                                style={{
+                                  fontWeight: 800,
+                                  fontSize: "15px",
+                                }}
+                              >
+                                {t.nombre_cajero}
+                              </div>
+                              <div
+                                style={{
+                                  fontSize: "11px",
+                                  opacity: 0.9,
+                                  fontWeight: 600,
+                                }}
+                              >
+                                Caja {t.caja}
+                              </div>
                             </div>
                           </div>
-                        </div>
-                        <div
-                          style={{
-                            textAlign: "right",
-                          }}
-                        >
-                          {estaAbierto ? (
-                            <div
-                              style={{
-                                fontSize: "12px",
-                                fontWeight: 700,
-                                background: "rgba(255,255,255,0.3)",
-                                padding: "4px 10px",
-                                borderRadius: "20px",
-                                whiteSpace: "nowrap",
-                              }}
-                            >
-                              🟢 EN LÍNEA
-                            </div>
-                          ) : (
-                            <div
-                              style={{
-                                fontSize: "12px",
-                                fontWeight: 700,
-                                background: "rgba(255,255,255,0.3)",
-                                padding: "4px 10px",
-                                borderRadius: "20px",
-                                whiteSpace: "nowrap",
-                              }}
-                            >
-                              ✓ CERRADO
-                            </div>
-                          )}
+                          <div
+                            style={{
+                              textAlign: "right",
+                            }}
+                          >
+                            {estaAbierto ? (
+                              <div
+                                style={{
+                                  fontSize: "12px",
+                                  fontWeight: 700,
+                                  background: "rgba(255,255,255,0.3)",
+                                  padding: "4px 10px",
+                                  borderRadius: "20px",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                🟢 EN LÍNEA
+                              </div>
+                            ) : (
+                              <div
+                                style={{
+                                  fontSize: "12px",
+                                  fontWeight: 700,
+                                  background: "rgba(255,255,255,0.3)",
+                                  padding: "4px 10px",
+                                  borderRadius: "20px",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                ✓ CERRADO
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    {/* Card Body */}
-                    <div style={{ padding: "16px" }}>
-                      {/* Fechas */}
-                      <div
-                        style={{
-                          marginBottom: "16px",
-                          paddingBottom: "12px",
-                          borderBottom: "1px solid #e2e8f0",
-                        }}
-                      >
+                      {/* Card Body */}
+                      <div style={{ padding: "16px" }}>
+                        {/* Fechas */}
                         <div
                           style={{
-                            fontSize: "12px",
-                            fontWeight: 700,
-                            color: "#64748b",
-                            textTransform: "uppercase",
-                            marginBottom: "4px",
-                            letterSpacing: "0.5px",
+                            marginBottom: "16px",
+                            paddingBottom: "12px",
+                            borderBottom: "1px solid #e2e8f0",
                           }}
                         >
-                          Horario
+                          <div
+                            style={{
+                              fontSize: "12px",
+                              fontWeight: 700,
+                              color: "#64748b",
+                              textTransform: "uppercase",
+                              marginBottom: "4px",
+                              letterSpacing: "0.5px",
+                            }}
+                          >
+                            Horario
+                          </div>
+                          <div
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: "1fr 1fr",
+                              gap: "8px",
+                              fontSize: "12px",
+                            }}
+                          >
+                            <div>
+                              <div
+                                style={{
+                                  color: "#94a3b8",
+                                  fontSize: "11px",
+                                  marginBottom: "2px",
+                                }}
+                              >
+                                Apertura
+                              </div>
+                              <div
+                                style={{
+                                  color: "#0f172a",
+                                  fontWeight: 600,
+                                }}
+                              >
+                                {formatearFecha(t.fecha_apertura)}
+                              </div>
+                            </div>
+                            <div>
+                              <div
+                                style={{
+                                  color: "#94a3b8",
+                                  fontSize: "11px",
+                                  marginBottom: "2px",
+                                }}
+                              >
+                                Cierre
+                              </div>
+                              <div
+                                style={{
+                                  color: t.fecha_cierre ? "#0f172a" : "#94a3b8",
+                                  fontWeight: 600,
+                                }}
+                              >
+                                {formatearFecha(t.fecha_cierre) || "En línea"}
+                              </div>
+                            </div>
+                          </div>
                         </div>
+
+                        {/* Montos Principales */}
                         <div
                           style={{
                             display: "grid",
                             gridTemplateColumns: "1fr 1fr",
-                            gap: "8px",
-                            fontSize: "12px",
+                            gap: "12px",
+                            marginBottom: "14px",
                           }}
                         >
-                          <div>
+                          <div
+                            style={{
+                              background: "#f0fdf4",
+                              padding: "10px",
+                              borderRadius: "8px",
+                              border: "1px solid #bbf7d0",
+                            }}
+                          >
                             <div
                               style={{
-                                color: "#94a3b8",
                                 fontSize: "11px",
-                                marginBottom: "2px",
+                                fontWeight: 700,
+                                color: "#3f6319",
+                                textTransform: "uppercase",
+                                marginBottom: "4px",
                               }}
                             >
-                              Apertura
+                              Efectivo Neto
                             </div>
                             <div
                               style={{
-                                color: "#0f172a",
-                                fontWeight: 600,
+                                fontSize: "16px",
+                                fontWeight: 900,
+                                color: "#15803d",
                               }}
                             >
-                              {formatearFecha(t.fecha_apertura)}
+                              L{" "}
+                              {parseFloat(t.efectivo_neto || 0).toLocaleString(
+                                "de-DE",
+                                { minimumFractionDigits: 2 },
+                              )}
                             </div>
                           </div>
-                          <div>
+                          <div
+                            style={{
+                              background: "#f3f4f6",
+                              padding: "10px",
+                              borderRadius: "8px",
+                              border: "1px solid #d1d5db",
+                            }}
+                          >
                             <div
                               style={{
-                                color: "#94a3b8",
                                 fontSize: "11px",
-                                marginBottom: "2px",
+                                fontWeight: 700,
+                                color: "#374151",
+                                textTransform: "uppercase",
+                                marginBottom: "4px",
                               }}
                             >
-                              Cierre
+                              Total Ventas
                             </div>
                             <div
                               style={{
-                                color: t.fecha_cierre ? "#0f172a" : "#94a3b8",
-                                fontWeight: 600,
+                                fontSize: "16px",
+                                fontWeight: 900,
+                                color: "#1f2937",
                               }}
                             >
-                              {formatearFecha(t.fecha_cierre) || "En línea"}
+                              L{" "}
+                              {parseFloat(t.total_ventas || 0).toLocaleString(
+                                "de-DE",
+                                { minimumFractionDigits: 2 },
+                              )}
                             </div>
                           </div>
                         </div>
-                      </div>
 
-                      {/* Montos Principales */}
-                      <div
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns: "1fr 1fr",
-                          gap: "12px",
-                          marginBottom: "14px",
-                        }}
-                      >
+                        {/* Métodos de Pago */}
                         <div
                           style={{
-                            background: "#f0fdf4",
-                            padding: "10px",
+                            background: "#f8fafc",
+                            padding: "12px",
                             borderRadius: "8px",
-                            border: "1px solid #bbf7d0",
+                            marginBottom: "12px",
                           }}
                         >
                           <div
                             style={{
                               fontSize: "11px",
                               fontWeight: 700,
-                              color: "#3f6319",
+                              color: "#64748b",
                               textTransform: "uppercase",
-                              marginBottom: "4px",
+                              marginBottom: "8px",
+                              letterSpacing: "0.5px",
                             }}
                           >
-                            Efectivo Neto
+                            Métodos de Pago
                           </div>
                           <div
                             style={{
-                              fontSize: "16px",
-                              fontWeight: 900,
-                              color: "#15803d",
+                              display: "grid",
+                              gridTemplateColumns: "1fr 1fr 1fr",
+                              gap: "8px",
+                              fontSize: "12px",
                             }}
                           >
-                            L{" "}
-                            {parseFloat(t.efectivo_neto || 0).toLocaleString(
-                              "de-DE",
-                              { minimumFractionDigits: 2 },
-                            )}
+                            <div>
+                              <div
+                                style={{
+                                  color: "#64748b",
+                                  fontSize: "10px",
+                                  marginBottom: "2px",
+                                }}
+                              >
+                                💳 Tarjeta
+                              </div>
+                              <div
+                                style={{
+                                  color: "#1d4ed8",
+                                  fontWeight: 700,
+                                }}
+                              >
+                                L{" "}
+                                {parseFloat(t.tarjeta || 0).toLocaleString(
+                                  "de-DE",
+                                  { minimumFractionDigits: 2 },
+                                )}
+                              </div>
+                            </div>
+                            <div>
+                              <div
+                                style={{
+                                  color: "#64748b",
+                                  fontSize: "10px",
+                                  marginBottom: "2px",
+                                }}
+                              >
+                                🏦 Transf.
+                              </div>
+                              <div
+                                style={{
+                                  color: "#6d28d9",
+                                  fontWeight: 700,
+                                }}
+                              >
+                                L{" "}
+                                {parseFloat(
+                                  t.transferencia || 0,
+                                ).toLocaleString("de-DE", {
+                                  minimumFractionDigits: 2,
+                                })}
+                              </div>
+                            </div>
+                            <div>
+                              <div
+                                style={{
+                                  color: "#64748b",
+                                  fontSize: "10px",
+                                  marginBottom: "2px",
+                                }}
+                              >
+                                💱 USD
+                              </div>
+                              <div
+                                style={{
+                                  color: "#92400e",
+                                  fontWeight: 700,
+                                }}
+                              >
+                                $ {parseFloat(t.dolares_usd || 0).toFixed(2)}
+                              </div>
+                            </div>
                           </div>
                         </div>
-                        <div
-                          style={{
-                            background: "#f3f4f6",
-                            padding: "10px",
-                            borderRadius: "8px",
-                            border: "1px solid #d1d5db",
-                          }}
-                        >
-                          <div
-                            style={{
-                              fontSize: "11px",
-                              fontWeight: 700,
-                              color: "#374151",
-                              textTransform: "uppercase",
-                              marginBottom: "4px",
-                            }}
-                          >
-                            Total Ventas
-                          </div>
-                          <div
-                            style={{
-                              fontSize: "16px",
-                              fontWeight: 900,
-                              color: "#1f2937",
-                            }}
-                          >
-                            L{" "}
-                            {parseFloat(t.total_ventas || 0).toLocaleString(
-                              "de-DE",
-                              { minimumFractionDigits: 2 },
-                            )}
-                          </div>
-                        </div>
-                      </div>
 
-                      {/* Métodos de Pago */}
-                      <div
-                        style={{
-                          background: "#f8fafc",
-                          padding: "12px",
-                          borderRadius: "8px",
-                          marginBottom: "12px",
-                        }}
-                      >
-                        <div
-                          style={{
-                            fontSize: "11px",
-                            fontWeight: 700,
-                            color: "#64748b",
-                            textTransform: "uppercase",
-                            marginBottom: "8px",
-                            letterSpacing: "0.5px",
-                          }}
-                        >
-                          Métodos de Pago
-                        </div>
+                        {/* Productos y Gastos */}
                         <div
                           style={{
                             display: "grid",
                             gridTemplateColumns: "1fr 1fr 1fr",
                             gap: "8px",
-                            fontSize: "12px",
+                            paddingTop: "12px",
+                            borderTop: "1px solid #e2e8f0",
                           }}
                         >
-                          <div>
+                          <div
+                            style={{
+                              textAlign: "center",
+                              paddingTop: "8px",
+                            }}
+                          >
                             <div
                               style={{
-                                color: "#64748b",
                                 fontSize: "10px",
-                                marginBottom: "2px",
+                                fontWeight: 700,
+                                color: "#64748b",
+                                textTransform: "uppercase",
+                                marginBottom: "4px",
                               }}
                             >
-                              💳 Tarjeta
+                              🍽 Platillos
                             </div>
                             <div
                               style={{
-                                color: "#1d4ed8",
+                                fontSize: "18px",
+                                fontWeight: 800,
+                                color: "#166534",
+                                background: "#f0fdf4",
+                                padding: "4px 8px",
+                                borderRadius: "6px",
+                                display: "inline-block",
+                              }}
+                            >
+                              {Math.round(parseFloat(t.total_platillos || 0))}
+                            </div>
+                          </div>
+                          <div
+                            style={{
+                              textAlign: "center",
+                              paddingTop: "8px",
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontSize: "10px",
                                 fontWeight: 700,
+                                color: "#64748b",
+                                textTransform: "uppercase",
+                                marginBottom: "4px",
+                              }}
+                            >
+                              🥤 Bebidas
+                            </div>
+                            <div
+                              style={{
+                                fontSize: "18px",
+                                fontWeight: 800,
+                                color: "#1e40af",
+                                background: "#eff6ff",
+                                padding: "4px 8px",
+                                borderRadius: "6px",
+                                display: "inline-block",
+                              }}
+                            >
+                              {Math.round(parseFloat(t.total_bebidas || 0))}
+                            </div>
+                          </div>
+                          <div
+                            style={{
+                              textAlign: "center",
+                              paddingTop: "8px",
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontSize: "10px",
+                                fontWeight: 700,
+                                color: "#64748b",
+                                textTransform: "uppercase",
+                                marginBottom: "4px",
+                              }}
+                            >
+                              💸 Gastos
+                            </div>
+                            <div
+                              style={{
+                                fontSize: "18px",
+                                fontWeight: 800,
+                                color: "#dc2626",
+                                background: "#fee2e2",
+                                padding: "4px 8px",
+                                borderRadius: "6px",
+                                display: "inline-block",
                               }}
                             >
                               L{" "}
-                              {parseFloat(t.tarjeta || 0).toLocaleString(
+                              {parseFloat(t.gastos || 0).toLocaleString(
                                 "de-DE",
-                                { minimumFractionDigits: 2 },
+                                {
+                                  minimumFractionDigits: 2,
+                                },
                               )}
                             </div>
-                          </div>
-                          <div>
-                            <div
-                              style={{
-                                color: "#64748b",
-                                fontSize: "10px",
-                                marginBottom: "2px",
-                              }}
-                            >
-                              🏦 Transf.
-                            </div>
-                            <div
-                              style={{
-                                color: "#6d28d9",
-                                fontWeight: 700,
-                              }}
-                            >
-                              L{" "}
-                              {parseFloat(t.transferencia || 0).toLocaleString(
-                                "de-DE",
-                                { minimumFractionDigits: 2 },
-                              )}
-                            </div>
-                          </div>
-                          <div>
-                            <div
-                              style={{
-                                color: "#64748b",
-                                fontSize: "10px",
-                                marginBottom: "2px",
-                              }}
-                            >
-                              💱 USD
-                            </div>
-                            <div
-                              style={{
-                                color: "#92400e",
-                                fontWeight: 700,
-                              }}
-                            >
-                              $ {parseFloat(t.dolares_usd || 0).toFixed(2)}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Productos y Gastos */}
-                      <div
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns: "1fr 1fr 1fr",
-                          gap: "8px",
-                          paddingTop: "12px",
-                          borderTop: "1px solid #e2e8f0",
-                        }}
-                      >
-                        <div
-                          style={{
-                            textAlign: "center",
-                            paddingTop: "8px",
-                          }}
-                        >
-                          <div
-                            style={{
-                              fontSize: "10px",
-                              fontWeight: 700,
-                              color: "#64748b",
-                              textTransform: "uppercase",
-                              marginBottom: "4px",
-                            }}
-                          >
-                            🍽 Platillos
-                          </div>
-                          <div
-                            style={{
-                              fontSize: "18px",
-                              fontWeight: 800,
-                              color: "#166534",
-                              background: "#f0fdf4",
-                              padding: "4px 8px",
-                              borderRadius: "6px",
-                              display: "inline-block",
-                            }}
-                          >
-                            {Math.round(parseFloat(t.total_platillos || 0))}
-                          </div>
-                        </div>
-                        <div
-                          style={{
-                            textAlign: "center",
-                            paddingTop: "8px",
-                          }}
-                        >
-                          <div
-                            style={{
-                              fontSize: "10px",
-                              fontWeight: 700,
-                              color: "#64748b",
-                              textTransform: "uppercase",
-                              marginBottom: "4px",
-                            }}
-                          >
-                            🥤 Bebidas
-                          </div>
-                          <div
-                            style={{
-                              fontSize: "18px",
-                              fontWeight: 800,
-                              color: "#1e40af",
-                              background: "#eff6ff",
-                              padding: "4px 8px",
-                              borderRadius: "6px",
-                              display: "inline-block",
-                            }}
-                          >
-                            {Math.round(parseFloat(t.total_bebidas || 0))}
-                          </div>
-                        </div>
-                        <div
-                          style={{
-                            textAlign: "center",
-                            paddingTop: "8px",
-                          }}
-                        >
-                          <div
-                            style={{
-                              fontSize: "10px",
-                              fontWeight: 700,
-                              color: "#64748b",
-                              textTransform: "uppercase",
-                              marginBottom: "4px",
-                            }}
-                          >
-                            💸 Gastos
-                          </div>
-                          <div
-                            style={{
-                              fontSize: "18px",
-                              fontWeight: 800,
-                              color: "#dc2626",
-                              background: "#fee2e2",
-                              padding: "4px 8px",
-                              borderRadius: "6px",
-                              display: "inline-block",
-                            }}
-                          >
-                            L{" "}
-                            {parseFloat(t.gastos || 0).toLocaleString("de-DE", {
-                              minimumFractionDigits: 2,
-                            })}
                           </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                );
-              })
+                  );
+                })
             )}
           </div>
         </div>

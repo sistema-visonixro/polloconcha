@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { STORE, getAll } from "./utils/localDB";
+import { supabase } from "./supabaseClient";
 
 interface EstadoResultadosViewProps {
   onBack?: () => void;
@@ -48,6 +49,7 @@ export default function EstadoResultadosView({
     totalIngresos: number;
     compras: number;
     gastos: number;
+    pagosProveedores: number;
     planilla: number;
     costosOperativos: number;
     totalEgresos: number;
@@ -59,60 +61,218 @@ export default function EstadoResultadosView({
     setLoading(true);
     setResultado(null);
     try {
-      // Ventas
-      const todasVentas = await getAll<any>(STORE.VENTAS);
-      const ventasFiltradas = todasVentas.filter((v) => {
-        const fecha = (v.fecha_hora || "").slice(0, 10);
-        return fecha >= fechaDesde && fecha <= fechaHasta;
-      });
-      const ventas = ventasFiltradas.reduce(
-        (s: number, v: any) => s + Number(v.total || 0),
-        0,
-      );
+      try {
+        const { data: estadoRows, error: estadoError } = await supabase
+          .from("vw_estado_resultados_periodo")
+          .select(
+            "ventas, compras, gastos_operativos, pagos_proveedores, planilla, costos_operativos_fijos, total_egresos, utilidad_neta",
+          )
+          .eq("periodo_tipo", "dia")
+          .gte("periodo_inicio", `${fechaDesde} 00:00:00`)
+          .lte("periodo_inicio", `${fechaHasta} 23:59:59`);
 
-      // Gastos
-      const todosGastos = await getAll<any>(STORE.GASTOS);
-      const gastosFiltrados = todosGastos.filter((g) => {
-        const fecha = (g.fecha || "").slice(0, 10);
-        return fecha >= fechaDesde && fecha <= fechaHasta;
-      });
-      const gastos = gastosFiltrados.reduce(
-        (s: number, g: any) => s + Number(g.monto || 0),
-        0,
-      );
+        if (estadoError) throw estadoError;
+        if (estadoRows && estadoRows.length > 0) {
+          const ventas = estadoRows.reduce(
+            (s: number, r: any) => s + Number(r.ventas || 0),
+            0,
+          );
+          const compras = estadoRows.reduce(
+            (s: number, r: any) => s + Number(r.compras || 0),
+            0,
+          );
+          const gastos = estadoRows.reduce(
+            (s: number, r: any) => s + Number(r.gastos_operativos || 0),
+            0,
+          );
+          const pagosProveedores = estadoRows.reduce(
+            (s: number, r: any) => s + Number(r.pagos_proveedores || 0),
+            0,
+          );
+          const planilla = estadoRows.reduce(
+            (s: number, r: any) => s + Number(r.planilla || 0),
+            0,
+          );
+          const costosOperativos = estadoRows.reduce(
+            (s: number, r: any) => s + Number(r.costos_operativos_fijos || 0),
+            0,
+          );
+          const totalEgresos = estadoRows.reduce(
+            (s: number, r: any) => s + Number(r.total_egresos || 0),
+            0,
+          );
+          const utilidad = estadoRows.reduce(
+            (s: number, r: any) => s + Number(r.utilidad_neta || 0),
+            0,
+          );
 
-      // Compras
-      const todasCompras = await getAll<any>(STORE.COMPRAS);
-      const comprasFiltradas = todasCompras.filter(
-        (c) => c.fecha >= fechaDesde && c.fecha <= fechaHasta,
-      );
-      const compras = comprasFiltradas.reduce(
-        (s: number, c: any) => s + Number(c.monto || 0),
-        0,
-      );
+          setResultado({
+            ventas,
+            totalIngresos: ventas,
+            compras,
+            gastos,
+            pagosProveedores,
+            planilla,
+            costosOperativos,
+            totalEgresos,
+            utilidad,
+          });
+          return;
+        }
+      } catch {
+        // Si la vista aún no existe o falla, continuar con fallback actual.
+      }
 
-      // Planilla
-      const todaPlanilla = await getAll<any>(STORE.PLANILLA);
-      const planillaFiltrada = todaPlanilla.filter(
-        (p) => p.fecha_pago >= fechaDesde && p.fecha_pago <= fechaHasta,
-      );
-      const planilla = planillaFiltrada.reduce(
-        (s: number, p: any) => s + Number(p.monto || 0),
-        0,
-      );
+      const desdeTs = `${fechaDesde} 00:00:00`;
+      const hastaTs = `${fechaHasta} 23:59:59`;
 
-      // Costos operativos
-      const todosCostos = await getAll<any>(STORE.COSTOS_OPERATIVOS);
-      const costosFiltrados = todosCostos.filter(
-        (c) => c.fecha >= fechaDesde && c.fecha <= fechaHasta,
-      );
-      const costosOperativos = costosFiltrados.reduce(
-        (s: number, c: any) => s + Number(c.monto || 0),
-        0,
-      );
+      // ── Ventas ── (Supabase con paginación, fallback a IndexedDB)
+      let ventas = 0;
+      try {
+        let page = 0;
+        const PAGE_SIZE = 1000;
+        let hasMore = true;
+        while (hasMore) {
+          const { data, error } = await supabase
+            .from("ventas")
+            .select("total, tipo")
+            .gte("fecha_hora", desdeTs)
+            .lte("fecha_hora", hastaTs)
+            .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
+          if (error) throw error;
+          const rows = data || [];
+          ventas += rows
+            .filter(
+              (v: any) => String(v.tipo || "").toUpperCase() !== "CREDITO",
+            )
+            .reduce((s: number, v: any) => s + Number(v.total || 0), 0);
+          hasMore = rows.length === PAGE_SIZE;
+          page++;
+        }
+      } catch {
+        const todasVentas = await getAll<any>(STORE.VENTAS);
+        ventas = todasVentas
+          .filter((v: any) => {
+            const fecha = (v.fecha_hora || "").slice(0, 10);
+            return fecha >= fechaDesde && fecha <= fechaHasta;
+          })
+          .filter((v: any) => String(v.tipo || "").toUpperCase() !== "CREDITO")
+          .reduce((s: number, v: any) => s + Number(v.total || 0), 0);
+      }
+
+      // ── Gastos ── (Supabase, fallback a IndexedDB)
+      let gastos = 0;
+      try {
+        const { data, error } = await supabase
+          .from("gastos")
+          .select("monto")
+          .gte("fecha", fechaDesde)
+          .lte("fecha", fechaHasta);
+        if (error) throw error;
+        gastos = (data || []).reduce(
+          (s: number, g: any) => s + Number(g.monto || 0),
+          0,
+        );
+      } catch {
+        const todosGastos = await getAll<any>(STORE.GASTOS);
+        gastos = todosGastos
+          .filter((g: any) => {
+            const fecha = (g.fecha || "").slice(0, 10);
+            return fecha >= fechaDesde && fecha <= fechaHasta;
+          })
+          .reduce((s: number, g: any) => s + Number(g.monto || 0), 0);
+      }
+
+      // ── Compras ── (Supabase, fallback a IndexedDB)
+      let compras = 0;
+      try {
+        const { data, error } = await supabase
+          .from("compras")
+          .select("monto")
+          .gte("fecha", fechaDesde)
+          .lte("fecha", fechaHasta);
+        if (error) throw error;
+        compras = (data || []).reduce(
+          (s: number, c: any) => s + Number(c.monto || 0),
+          0,
+        );
+      } catch {
+        const todasCompras = await getAll<any>(STORE.COMPRAS);
+        compras = todasCompras
+          .filter((c: any) => c.fecha >= fechaDesde && c.fecha <= fechaHasta)
+          .reduce((s: number, c: any) => s + Number(c.monto || 0), 0);
+      }
+
+      // ── Planilla ── (Supabase, fallback a IndexedDB)
+      let planilla = 0;
+      try {
+        const { data, error } = await supabase
+          .from("planilla")
+          .select("monto")
+          .gte("fecha_pago", fechaDesde)
+          .lte("fecha_pago", fechaHasta);
+        if (error) throw error;
+        planilla = (data || []).reduce(
+          (s: number, p: any) => s + Number(p.monto || 0),
+          0,
+        );
+      } catch {
+        const todaPlanilla = await getAll<any>(STORE.PLANILLA);
+        planilla = todaPlanilla
+          .filter(
+            (p: any) =>
+              p.fecha_pago >= fechaDesde && p.fecha_pago <= fechaHasta,
+          )
+          .reduce((s: number, p: any) => s + Number(p.monto || 0), 0);
+      }
+
+      // ── Costos operativos ── (Supabase, fallback a IndexedDB)
+      let costosOperativos = 0;
+      try {
+        const { data, error } = await supabase
+          .from("costos_operativos")
+          .select("monto")
+          .gte("fecha", fechaDesde)
+          .lte("fecha", fechaHasta);
+        if (error) throw error;
+        costosOperativos = (data || []).reduce(
+          (s: number, c: any) => s + Number(c.monto || 0),
+          0,
+        );
+      } catch {
+        const todosCostos = await getAll<any>(STORE.COSTOS_OPERATIVOS);
+        costosOperativos = todosCostos
+          .filter((c: any) => c.fecha >= fechaDesde && c.fecha <= fechaHasta)
+          .reduce((s: number, c: any) => s + Number(c.monto || 0), 0);
+      }
+
+      // ── Pagos a proveedores (CxP) ── (Supabase, fallback a IndexedDB)
+      let pagosProveedores = 0;
+      try {
+        const { data, error } = await supabase
+          .from("vw_pagos_proveedores_periodo")
+          .select("monto_pagado")
+          .eq("periodo_tipo", "dia")
+          .gte("periodo_inicio", `${fechaDesde} 00:00:00`)
+          .lte("periodo_inicio", `${fechaHasta} 23:59:59`);
+        if (error) throw error;
+        pagosProveedores = (data || []).reduce(
+          (s: number, r: any) => s + Number(r.monto_pagado || 0),
+          0,
+        );
+      } catch {
+        const todosPagosProv = await getAll<any>(STORE.PAGOS_PROVEEDORES);
+        pagosProveedores = todosPagosProv
+          .filter((p: any) => {
+            const fecha = String(p.fecha_hora || "").slice(0, 10);
+            return fecha >= fechaDesde && fecha <= fechaHasta;
+          })
+          .reduce((s: number, p: any) => s + Number(p.monto || 0), 0);
+      }
 
       const totalIngresos = ventas;
-      const totalEgresos = compras + gastos + planilla + costosOperativos;
+      const totalEgresos =
+        compras + gastos + pagosProveedores + planilla + costosOperativos;
       const utilidad = totalIngresos - totalEgresos;
 
       setResultado({
@@ -120,6 +280,7 @@ export default function EstadoResultadosView({
         totalIngresos,
         compras,
         gastos,
+        pagosProveedores,
         planilla,
         costosOperativos,
         totalEgresos,
@@ -200,6 +361,7 @@ export default function EstadoResultadosView({
             <div class="section-title egresos">EGRESOS</div>
             <div class="row"><span>Compras de insumos / mercancía</span><span class="mono">${fmtLps(resultado.compras)}</span></div>
             <div class="row"><span>Gastos operativos (varios)</span><span class="mono">${fmtLps(resultado.gastos)}</span></div>
+            <div class="row"><span>Pagos a proveedores (CxP)</span><span class="mono">${fmtLps(resultado.pagosProveedores)}</span></div>
             <div class="row"><span>Planilla (pagos de nómina)</span><span class="mono">${fmtLps(resultado.planilla)}</span></div>
             <div class="row"><span>Costos operativos fijos</span><span class="mono">${fmtLps(resultado.costosOperativos)}</span></div>
             <div class="row total-egr"><span>TOTAL EGRESOS</span><span class="mono">${fmtLps(resultado.totalEgresos)}</span></div>
@@ -268,6 +430,7 @@ export default function EstadoResultadosView({
           <div class="t">EGRESOS</div>
           <div class="row"><span class="label">Compras</span><span class="v">${fmtLps(resultado.compras)}</span></div>
           <div class="row"><span class="label">Gastos</span><span class="v">${fmtLps(resultado.gastos)}</span></div>
+          <div class="row"><span class="label">Pagos Proveedores CxP</span><span class="v">${fmtLps(resultado.pagosProveedores)}</span></div>
           <div class="row"><span class="label">Planilla</span><span class="v">${fmtLps(resultado.planilla)}</span></div>
           <div class="row"><span class="label">Costos operativos</span><span class="v">${fmtLps(resultado.costosOperativos)}</span></div>
           <div class="row t"><span class="label">TOTAL EGRESOS</span><span class="v">${fmtLps(resultado.totalEgresos)}</span></div>
@@ -574,6 +737,11 @@ export default function EstadoResultadosView({
             true,
           )}
           {renderFila("Gastos operativos (varios)", resultado.gastos, true)}
+          {renderFila(
+            "Pagos a proveedores (CxP)",
+            resultado.pagosProveedores,
+            true,
+          )}
           {renderFila("Planilla (pagos de nómina)", resultado.planilla, true)}
           {renderFila(
             "Costos operativos fijos",

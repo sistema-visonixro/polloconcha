@@ -934,7 +934,9 @@ export default function PuntoDeVentaView({
         return Number.isFinite(n) ? n : 0;
       };
       const isSalida = (movType: any): boolean => {
-        const t = String(movType || "").toLowerCase().trim();
+        const t = String(movType || "")
+          .toLowerCase()
+          .trim();
         return !(t === "entrada" || t === "compra");
       };
 
@@ -984,7 +986,10 @@ export default function PuntoDeVentaView({
             if (movsData?.length) movimientos = movsData;
           }
 
-          if (tipo === "bebidas" && (productos.length === 0 || stockProductos.length === 0)) {
+          if (
+            tipo === "bebidas" &&
+            (productos.length === 0 || stockProductos.length === 0)
+          ) {
             const [{ data: prodsData }, { data: stocksData }] =
               await Promise.all([
                 supabase
@@ -1016,7 +1021,9 @@ export default function PuntoDeVentaView({
       });
 
       if (tipo === "bebidas") {
-        const bebidas = (productos || []).filter((p: any) => p.tipo === "bebida");
+        const bebidas = (productos || []).filter(
+          (p: any) => p.tipo === "bebida",
+        );
         const nombrePorId = new Map<string, string>(
           bebidas.map((p: any) => [String(p.id), String(p.nombre || "Bebida")]),
         );
@@ -1047,7 +1054,9 @@ export default function PuntoDeVentaView({
             vendido,
             stock: num(stockPorId.get(id)),
           }))
-          .sort((a, b) => b.vendido - a.vendido || a.nombre.localeCompare(b.nombre));
+          .sort(
+            (a, b) => b.vendido - a.vendido || a.nombre.localeCompare(b.nombre),
+          );
 
         setInventarioDiaRows(rows);
       } else {
@@ -1083,7 +1092,9 @@ export default function PuntoDeVentaView({
             vendido,
             stock: num(stockPorId.get(id)),
           }))
-          .sort((a, b) => b.vendido - a.vendido || a.nombre.localeCompare(b.nombre));
+          .sort(
+            (a, b) => b.vendido - a.vendido || a.nombre.localeCompare(b.nombre),
+          );
 
         setInventarioDiaRows(rows);
       }
@@ -1103,9 +1114,7 @@ export default function PuntoDeVentaView({
     }
 
     const titulo =
-      inventarioDiaTipo === "insumos"
-        ? "INSUMOS DEL DÍA"
-        : "BEBIDAS DEL DÍA";
+      inventarioDiaTipo === "insumos" ? "INSUMOS DEL DÍA" : "BEBIDAS DEL DÍA";
     const negocio = datosNegocio?.nombre_negocio || NOMBRE_NEGOCIO;
 
     const filas = inventarioDiaRows
@@ -11335,7 +11344,9 @@ export default function PuntoDeVentaView({
             >
               <div>
                 <h3 style={{ margin: 0 }}>📦 Insumos y bebidas del día</h3>
-                <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 12 }}>
+                <p
+                  style={{ margin: "4px 0 0", color: "#64748b", fontSize: 12 }}
+                >
                   Monitoreo diario de salidas de inventario y stock actual
                 </p>
               </div>
@@ -11347,7 +11358,14 @@ export default function PuntoDeVentaView({
               </button>
             </div>
 
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                flexWrap: "wrap",
+                marginBottom: 12,
+              }}
+            >
               <button
                 className="menu-btn"
                 onClick={() => cargarInsumosBebidasDelDia("insumos")}
@@ -11356,7 +11374,8 @@ export default function PuntoDeVentaView({
                     inventarioDiaTipo === "insumos"
                       ? "linear-gradient(135deg, #dcfce7, #bbf7d0)"
                       : "linear-gradient(135deg, #f8fafc, #f1f5f9)",
-                  color: inventarioDiaTipo === "insumos" ? "#166534" : "#475569",
+                  color:
+                    inventarioDiaTipo === "insumos" ? "#166534" : "#475569",
                   border: "1px solid #cbd5e1",
                   padding: "10px 14px",
                   flex: 1,
@@ -11377,7 +11396,8 @@ export default function PuntoDeVentaView({
                     inventarioDiaTipo === "bebidas"
                       ? "linear-gradient(135deg, #dbeafe, #bfdbfe)"
                       : "linear-gradient(135deg, #f8fafc, #f1f5f9)",
-                  color: inventarioDiaTipo === "bebidas" ? "#1d4ed8" : "#475569",
+                  color:
+                    inventarioDiaTipo === "bebidas" ? "#1d4ed8" : "#475569",
                   border: "1px solid #cbd5e1",
                   padding: "10px 14px",
                   flex: 1,
@@ -11392,7 +11412,13 @@ export default function PuntoDeVentaView({
               </button>
             </div>
 
-            <div style={{ border: "1px solid #e2e8f0", borderRadius: 10, overflow: "hidden" }}>
+            <div
+              style={{
+                border: "1px solid #e2e8f0",
+                borderRadius: 10,
+                overflow: "hidden",
+              }}
+            >
               <div
                 style={{
                   padding: "10px 12px",
@@ -11405,7 +11431,10 @@ export default function PuntoDeVentaView({
                 }}
               >
                 <strong>
-                  {inventarioDiaTipo === "insumos" ? "🧂 Insumos" : "🥤 Bebidas"} · {inventarioDiaFecha || "Hoy"}
+                  {inventarioDiaTipo === "insumos"
+                    ? "🧂 Insumos"
+                    : "🥤 Bebidas"}{" "}
+                  · {inventarioDiaFecha || "Hoy"}
                 </strong>
                 <button
                   className="inventory-btn primary"
@@ -11417,11 +11446,15 @@ export default function PuntoDeVentaView({
               </div>
 
               {inventarioDiaLoading ? (
-                <div style={{ padding: 22, color: "#64748b", textAlign: "center" }}>
+                <div
+                  style={{ padding: 22, color: "#64748b", textAlign: "center" }}
+                >
                   Cargando lista…
                 </div>
               ) : inventarioDiaRows.length === 0 ? (
-                <div style={{ padding: 22, color: "#64748b", textAlign: "center" }}>
+                <div
+                  style={{ padding: 22, color: "#64748b", textAlign: "center" }}
+                >
                   No hay salidas de inventario para esta lista en el día actual.
                 </div>
               ) : (
@@ -11438,7 +11471,13 @@ export default function PuntoDeVentaView({
                       {inventarioDiaRows.map((row) => (
                         <tr key={row.id}>
                           <td>{row.nombre}</td>
-                          <td style={{ textAlign: "right", color: "#dc2626", fontWeight: 700 }}>
+                          <td
+                            style={{
+                              textAlign: "right",
+                              color: "#dc2626",
+                              fontWeight: 700,
+                            }}
+                          >
                             {row.vendido.toFixed(2)}
                           </td>
                           <td style={{ textAlign: "right", color: "#0f172a" }}>

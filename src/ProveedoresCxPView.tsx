@@ -17,10 +17,16 @@ import {
   obtenerCuentasPorPagar,
   crearCuentaPorPagar,
   registrarPagoProveedor,
+  obtenerPagosProveedores,
 } from "./services/proveedorService";
 import { useDatosNegocio } from "./useDatosNegocio";
 
-type SubVista = "listaProveedores" | "formProveedor" | "listaCxP" | "formCxP";
+type SubVista =
+  | "listaProveedores"
+  | "formProveedor"
+  | "listaCxP"
+  | "formCxP"
+  | "listaPagosProv";
 
 const TIPO_PAGO_PROV: { value: TipoPagoProveedor; label: string }[] = [
   { value: "efectivo", label: "Efectivo" },
@@ -109,6 +115,15 @@ export default function ProveedoresCxPView({ onBack: _onBack }: Props) {
   const [exitoPago, setExitoPago] = useState<string | null>(null);
   const [errPago, setErrPago] = useState<string | null>(null);
 
+  const hoyStr = new Date().toISOString().slice(0, 10);
+  const inicioMesStr = (() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+  })();
+  const [pagosProv, setPagosProv] = useState<any[]>([]);
+  const [fechaDesdePago, setFechaDesdePago] = useState(inicioMesStr);
+  const [fechaHastaPago, setFechaHastaPago] = useState(hoyStr);
+
   const cargarProveedores = useCallback(async () => {
     setCargando(true);
     setError(null);
@@ -133,13 +148,38 @@ export default function ProveedoresCxPView({ onBack: _onBack }: Props) {
     }
   }, []);
 
+  const cargarPagosProveedor = useCallback(async () => {
+    setCargando(true);
+    setError(null);
+    try {
+      const data = await obtenerPagosProveedores({
+        proveedorId: provSlc?.id,
+        fechaDesde: fechaDesdePago,
+        fechaHasta: fechaHastaPago,
+      });
+      setPagosProv(data);
+    } catch (e: any) {
+      setError(e.message);
+      setPagosProv([]);
+    } finally {
+      setCargando(false);
+    }
+  }, [provSlc?.id, fechaDesdePago, fechaHastaPago]);
+
   useEffect(() => {
     if (subVista === "listaProveedores") {
       cargarProveedores();
       cargarCuentasPagar(); // Cargar todas para el dashboard
     }
     if (subVista === "listaCxP") cargarCuentasPagar(provSlc?.id);
-  }, [subVista, cargarProveedores, cargarCuentasPagar, provSlc]);
+    if (subVista === "listaPagosProv") cargarPagosProveedor();
+  }, [
+    subVista,
+    cargarProveedores,
+    cargarCuentasPagar,
+    cargarPagosProveedor,
+    provSlc,
+  ]);
 
   function abrirNuevoProveedor() {
     setEditProv(null);
@@ -359,6 +399,10 @@ export default function ProveedoresCxPView({ onBack: _onBack }: Props) {
   const totalDeudaProv = cuentasPagar
     .filter((c) => c.estado !== "pagado")
     .reduce((s, c) => s + Number(c.saldo_pendiente), 0);
+  const totalPagadoFiltro = pagosProv.reduce(
+    (s, p) => s + Number(p.monto || 0),
+    0,
+  );
 
   return (
     <div
@@ -485,6 +529,26 @@ export default function ProveedoresCxPView({ onBack: _onBack }: Props) {
                 }}
               >
                 + Nuevo Proveedor
+              </button>
+              <button
+                onClick={() => {
+                  setProvSlc(null);
+                  setFechaDesdePago(inicioMesStr);
+                  setFechaHastaPago(hoyStr);
+                  setSubVista("listaPagosProv");
+                }}
+                style={{
+                  padding: "12px 24px",
+                  background: "#2563eb",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 10,
+                  fontWeight: 800,
+                  cursor: "pointer",
+                  boxShadow: "0 4px 12px rgba(37, 99, 235, 0.2)",
+                }}
+              >
+                👁 Ver Pagos General
               </button>
             </div>
 
@@ -799,6 +863,17 @@ export default function ProveedoresCxPView({ onBack: _onBack }: Props) {
                     + Nueva CxP
                   </button>
                 )}
+                <button
+                  onClick={() => {
+                    setFechaDesdePago(inicioMesStr);
+                    setFechaHastaPago(hoyStr);
+                    setSubVista("listaPagosProv");
+                  }}
+                  className="btn-action"
+                  style={{ background: "#2563eb", color: "#fff" }}
+                >
+                  👁 Ver Pagos
+                </button>
               </div>
             </div>
 
@@ -1065,6 +1140,226 @@ export default function ProveedoresCxPView({ onBack: _onBack }: Props) {
                       </div>
                     );
                   })}
+                </div>
+              </>
+            )}
+          </>
+        )}
+
+        {/* LISTA PAGOS PROVEEDORES */}
+        {subVista === "listaPagosProv" && (
+          <>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 12,
+                marginBottom: 16,
+              }}
+            >
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 18 }}>
+                  {provSlc
+                    ? `Pagos realizados: ${provSlc.nombre_comercial}`
+                    : "Pagos a proveedores"}
+                </div>
+                <div style={{ fontSize: 13, color: "#64748b" }}>
+                  Total pagado en rango:{" "}
+                  <strong style={{ color: "#16a34a" }}>
+                    L {totalPagadoFiltro.toFixed(2)}
+                  </strong>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input
+                  type="date"
+                  value={fechaDesdePago}
+                  onChange={(e) => setFechaDesdePago(e.target.value)}
+                  style={{
+                    padding: "8px 10px",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: 8,
+                  }}
+                />
+                <input
+                  type="date"
+                  value={fechaHastaPago}
+                  onChange={(e) => setFechaHastaPago(e.target.value)}
+                  style={{
+                    padding: "8px 10px",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: 8,
+                  }}
+                />
+                <button
+                  onClick={cargarPagosProveedor}
+                  className="btn-action"
+                  style={{ background: "#0f766e", color: "#fff" }}
+                >
+                  Filtrar
+                </button>
+              </div>
+            </div>
+
+            {error && (
+              <div style={{ color: "#ef4444", marginBottom: 12 }}>
+                ⚠ {error}
+              </div>
+            )}
+
+            {cargando ? (
+              <div style={{ textAlign: "center", padding: 40, color: "#94a3b8" }}>
+                Cargando pagos...
+              </div>
+            ) : pagosProv.length === 0 ? (
+              <div style={{ textAlign: "center", padding: 40, color: "#94a3b8" }}>
+                No hay pagos registrados en el rango seleccionado.
+              </div>
+            ) : (
+              <>
+                <div
+                  className="desktop-only"
+                  style={{
+                    overflowX: "auto",
+                    background: "white",
+                    borderRadius: 12,
+                    border: "1px solid #e2e8f0",
+                  }}
+                >
+                  <table className="desktop-table">
+                    <thead>
+                      <tr
+                        style={{
+                          background: "#f8fafc",
+                          borderBottom: "2px solid #e2e8f0",
+                        }}
+                      >
+                        <th style={{ padding: "12px", textAlign: "left" }}>
+                          Fecha/Hora
+                        </th>
+                        <th style={{ padding: "12px", textAlign: "left" }}>
+                          Proveedor
+                        </th>
+                        <th style={{ padding: "12px", textAlign: "left" }}>
+                          CxP / Documento
+                        </th>
+                        <th style={{ padding: "12px", textAlign: "left" }}>
+                          Tipo
+                        </th>
+                        <th style={{ padding: "12px", textAlign: "right" }}>
+                          Monto
+                        </th>
+                        <th style={{ padding: "12px", textAlign: "left" }}>
+                          Cajero
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pagosProv.map((p, i) => (
+                        <tr
+                          key={p.id}
+                          style={{
+                            background: i % 2 === 0 ? "#fff" : "#fafafa",
+                            borderBottom: "1px solid #f1f5f9",
+                          }}
+                        >
+                          <td style={{ padding: "12px", fontSize: 12 }}>
+                            {p.fecha_hora
+                              ? new Date(p.fecha_hora).toLocaleString("es-HN")
+                              : "—"}
+                          </td>
+                          <td style={{ padding: "12px", fontWeight: 700 }}>
+                            {p.proveedor_nombre || "Proveedor"}
+                          </td>
+                          <td style={{ padding: "12px", fontSize: 12 }}>
+                            <div>{p.concepto_cxp || "—"}</div>
+                            <div style={{ color: "#64748b" }}>
+                              Doc: {p.numero_documento || "—"}
+                            </div>
+                          </td>
+                          <td style={{ padding: "12px" }}>
+                            <span
+                              style={{
+                                padding: "4px 10px",
+                                borderRadius: 999,
+                                fontSize: 11,
+                                fontWeight: 700,
+                                background: "#dbeafe",
+                                color: "#1e40af",
+                              }}
+                            >
+                              {String(p.tipo_pago || "").toUpperCase()}
+                            </span>
+                          </td>
+                          <td
+                            style={{
+                              padding: "12px",
+                              textAlign: "right",
+                              fontWeight: 800,
+                              color: "#16a34a",
+                            }}
+                          >
+                            L {Number(p.monto || 0).toFixed(2)}
+                          </td>
+                          <td style={{ padding: "12px" }}>{p.cajero || "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr style={{ background: "#ecfdf5" }}>
+                        <td colSpan={4} style={{ padding: "12px", fontWeight: 800 }}>
+                          TOTAL PAGADO
+                        </td>
+                        <td
+                          style={{
+                            padding: "12px",
+                            textAlign: "right",
+                            fontWeight: 900,
+                            color: "#15803d",
+                          }}
+                        >
+                          L {totalPagadoFiltro.toFixed(2)}
+                        </td>
+                        <td />
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+
+                <div className="card-grid">
+                  {pagosProv.map((p) => (
+                    <div key={p.id} className="mobile-card">
+                      <div className="mobile-card-title">
+                        {p.proveedor_nombre || "Proveedor"}
+                      </div>
+                      <div className="mobile-card-subtitle">
+                        {p.fecha_hora
+                          ? new Date(p.fecha_hora).toLocaleString("es-HN")
+                          : "—"}
+                      </div>
+                      <div className="mobile-card-row">
+                        <span>Concepto</span>
+                        <strong>{p.concepto_cxp || "—"}</strong>
+                      </div>
+                      <div className="mobile-card-row">
+                        <span>Documento</span>
+                        <strong>{p.numero_documento || "—"}</strong>
+                      </div>
+                      <div className="mobile-card-row">
+                        <span>Tipo</span>
+                        <strong>{String(p.tipo_pago || "").toUpperCase()}</strong>
+                      </div>
+                      <div className="mobile-card-row">
+                        <span>Monto</span>
+                        <strong style={{ color: "#16a34a" }}>
+                          L {Number(p.monto || 0).toFixed(2)}
+                        </strong>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </>
             )}
