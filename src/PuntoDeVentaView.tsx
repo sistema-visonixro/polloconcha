@@ -570,112 +570,159 @@ export default function PuntoDeVentaView({
     setShowResumen(true);
     setResumenLoading(true);
     try {
-      // ── IDB primero (siempre, sin depender de navigator.onLine) ──────────
-      {
-        const cierresIDB = await getByIndex<any>(
-          STORE.CIERRES,
-          "cajero_id",
-          usuarioActual?.id,
-        );
-        let aperturaIDB: any =
-          cierresIDB
-            .filter((c) => c.estado === "APERTURA")
-            .sort(
-              (a, b) =>
-                new Date(b.fecha ?? 0).getTime() -
-                new Date(a.fecha ?? 0).getTime(),
-            )[0] ?? null;
-
-        // Fallback: buscar en localStorage / apertura_cache y sincronizar en STORE.CIERRES
-        if (!aperturaIDB) {
-          const lsAp = obtenerAperturaLocalStorage();
-          const cachedAp =
-            lsAp?.cajero_id === usuarioActual?.id
-              ? lsAp
-              : await obtenerAperturaCache()
-                  .then((c) => (c?.cajero_id === usuarioActual?.id ? c : null))
-                  .catch(() => null);
-          if (cachedAp) {
-            const numId =
-              parseInt(cachedAp.id as string) > 0
-                ? parseInt(cachedAp.id as string)
-                : -Date.now();
-            aperturaIDB = {
-              id: numId,
-              cajero_id: cachedAp.cajero_id,
-              cajero: (cachedAp as any).cajero || "",
-              caja: cachedAp.caja,
-              fecha: cachedAp.fecha,
-              estado: "APERTURA",
-            };
-            await upsertOne(STORE.CIERRES, aperturaIDB);
-            console.log(
-              "✓ Apertura rescatada de cache y guardada en STORE.CIERRES",
-            );
-          }
-        }
-
-        if (aperturaIDB) {
-          const resumenIDB = await calcularResumenTurno(
-            aperturaIDB.id,
-            usuarioActual!.id,
-          );
-          if (!resumenIDB) {
-            setResumenLoading(false);
-            alert("No se pudo calcular el resumen desde IDB.");
-            setShowResumen(false);
-            return;
-          }
-
-          const tasa = await getPrecioDolarLocal();
-          const dolaresConvertidos = Number(
-            (resumenIDB.dolares_usd * tasa).toFixed(2),
-          );
-
-          // Calcular delivery desde IDB
-          const ventasIDB = await getByIndex<any>(
-            STORE.VENTAS,
-            "cajero_id",
-            usuarioActual!.id,
-          );
-          const tsAp = new Date(aperturaIDB.fecha ?? 0).getTime();
-          const deliverySum = ventasIDB
-            .filter((v) => {
-              const ts = new Date(v.fecha_hora ?? 0).getTime();
-              return ts >= tsAp && v.tipo !== "CREDITO";
-            })
-            .reduce((acc, v) => acc + parseFloat(v.delivery || 0), 0);
-
-          setResumenData({
-            efectivo: Number(
-              (resumenIDB.efectivo_bruto - resumenIDB.cambio_devuelto).toFixed(
-                2,
-              ),
-            ),
-            tarjeta: resumenIDB.tarjeta,
-            transferencia: resumenIDB.transferencia,
-            dolares: resumenIDB.dolares_lps,
-            dolares_usd: resumenIDB.dolares_usd,
-            dolares_convertidos: dolaresConvertidos,
-            tasa_dolar: tasa,
-            gastos: resumenIDB.gastos,
-            cambio: resumenIDB.cambio_devuelto,
-            delivery: deliverySum,
-            platillos: resumenIDB.platillos_vendidos,
-            bebidas: resumenIDB.bebidas_vendidas,
-            platillos_donados: resumenIDB.platillos_donados,
-            bebidas_donadas: resumenIDB.bebidas_donadas,
-          });
-          setResumenLoading(false);
-          return;
-        }
-        setResumenLoading(false);
+      if (!navigator.onLine) {
         alert(
-          "No hay apertura de caja en IndexedDB. El resumen de caja se calcula solo desde datos locales.",
+          "Se necesita conexión para abrir Resumen de Caja porque ahora usa únicamente datos de Supabase.",
         );
         setShowResumen(false);
         return;
       }
+
+      if (!usuarioActual?.id) {
+        alert("No se pudo identificar el usuario actual.");
+        setShowResumen(false);
+        return;
+      }
+
+      // Cada vez que se abre el resumen: sincronizar pendientes primero.
+      await sincronizarAperturaPendiente();
+      await sincronizarTodo();
+
+      const { data: aperturaSupabase, error: aperturaError } = await supabase
+        .from("cierres")
+        .select("id,cajero_id,caja,fecha,fecha_apertura,fecha_cierre,estado")
+        .eq("cajero_id", usuarioActual.id)
+        .eq("estado", "APERTURA")
+        .order("fecha_apertura", { ascending: false })
+        .order("fecha", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (aperturaError) throw aperturaError;
+
+      if (!aperturaSupabase) {
+        alert("No hay apertura activa en Supabase para este cajero.");
+        setShowResumen(false);
+        return;
+      }
+
+      const fechaInicio =
+        aperturaSupabase.fecha_apertura ?? aperturaSupabase.fecha ?? "";
+      const fechaFin = aperturaSupabase.fecha_cierre ?? new Date().toISOString();
+      const tsInicio = new Date(fechaInicio).getTime();
+      const tsFin = new Date(fechaFin).getTime();
+
+      let ventasQuery = supabase
+        .from("ventas")
+        .select(
+          "fecha_hora,tipo,es_donacion,productos,efectivo,tarjeta,transferencia,dolares,dolares_usd,cambio,delivery,total,caja",
+        )
+        .eq("cajero_id", usuarioActual.id)
+        .gte("fecha_hora", fechaInicio)
+        .lte("fecha_hora", fechaFin)
+        .neq("tipo", "CREDITO");
+
+      if (aperturaSupabase.caja) {
+        ventasQuery = ventasQuery.eq("caja", aperturaSupabase.caja);
+      }
+
+      const { data: ventasData, error: ventasError } = await ventasQuery;
+      if (ventasError) throw ventasError;
+
+      let gastosQuery = supabase
+        .from("gastos")
+        .select("monto,fecha,fecha_hora,caja")
+        .eq("cajero_id", usuarioActual.id);
+
+      if (aperturaSupabase.caja) {
+        gastosQuery = gastosQuery.eq("caja", aperturaSupabase.caja);
+      }
+
+      const { data: gastosData, error: gastosError } = await gastosQuery;
+      if (gastosError) throw gastosError;
+
+      const parseTs = (fechaHora?: string | null, fecha?: string | null) => {
+        const raw = (fechaHora && fechaHora.trim()) || (fecha && `${fecha}T00:00:00`) || "";
+        const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+        const ts = Date.parse(normalized);
+        return Number.isFinite(ts) ? ts : 0;
+      };
+
+      const ventasTurno = (ventasData || []).filter((v: any) => {
+        const ts = parseTs(v.fecha_hora, null);
+        return ts >= tsInicio && ts <= tsFin;
+      });
+
+      const ventasNormales = ventasTurno.filter((v: any) => v.es_donacion !== true);
+      const donaciones = ventasTurno.filter((v: any) => v.es_donacion === true);
+
+      const gastosTurno = (gastosData || []).filter((g: any) => {
+        const ts = parseTs(g.fecha_hora, g.fecha);
+        return ts >= tsInicio && ts <= tsFin;
+      });
+
+      const sumar = (arr: any[], campo: string) =>
+        arr.reduce((acc, row) => acc + parseFloat(row?.[campo] ?? 0), 0);
+
+      const contarTipo = (arr: any[], tipo: string) => {
+        let count = 0;
+        arr.forEach((venta) => {
+          const factor = venta.tipo === "DEVOLUCION" ? -1 : 1;
+          try {
+            const productos =
+              typeof venta.productos === "string"
+                ? JSON.parse(venta.productos)
+                : (venta.productos ?? []);
+            productos.forEach((producto: any) => {
+              if ((producto.tipo ?? "").toLowerCase() === tipo.toLowerCase()) {
+                count += factor * parseInt(producto.cantidad ?? producto.qty ?? 1);
+              }
+            });
+          } catch {
+            // Ignorar ventas con JSON inválido
+          }
+        });
+        return count;
+      };
+
+      const efectivoBruto = sumar(ventasNormales as any[], "efectivo");
+      const cambioTotal = sumar(ventasNormales as any[], "cambio");
+      const gastosTotal = gastosTurno.reduce(
+        (acc: number, gasto: any) => acc + parseFloat(gasto.monto ?? 0),
+        0,
+      );
+      const dolaresUsd = sumar(ventasNormales as any[], "dolares_usd");
+
+      const { data: precioData, error: precioError } = await supabase
+        .from("precio_dolar")
+        .select("valor")
+        .eq("id", "singleton")
+        .limit(1)
+        .maybeSingle();
+
+      if (precioError) throw precioError;
+
+      const tasaDolar = Number(precioData?.valor) || 0;
+      const dolaresConvertidos = Number((dolaresUsd * tasaDolar).toFixed(2));
+
+      setResumenData({
+        efectivo: Number((efectivoBruto - cambioTotal).toFixed(2)),
+        tarjeta: Number(sumar(ventasNormales as any[], "tarjeta").toFixed(2)),
+        transferencia: Number(
+          sumar(ventasNormales as any[], "transferencia").toFixed(2),
+        ),
+        dolares: Number(sumar(ventasNormales as any[], "dolares").toFixed(2)),
+        dolares_usd: Number(dolaresUsd.toFixed(2)),
+        dolares_convertidos: dolaresConvertidos,
+        tasa_dolar: tasaDolar,
+        gastos: Number(gastosTotal.toFixed(2)),
+        cambio: Number(cambioTotal.toFixed(2)),
+        delivery: Number(sumar(ventasTurno as any[], "delivery").toFixed(2)),
+        platillos: contarTipo(ventasNormales as any[], "comida"),
+        bebidas: contarTipo(ventasNormales as any[], "bebida"),
+        platillos_donados: contarTipo(donaciones as any[], "comida"),
+        bebidas_donadas: contarTipo(donaciones as any[], "bebida"),
+      });
     } catch (err) {
       console.error("Error al obtener resumen de caja:", err);
       setResumenData({
