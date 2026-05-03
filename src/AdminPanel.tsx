@@ -7,6 +7,7 @@ type ViewType =
   | "usuarios"
   | "inventario"
   | "movimientosInventario"
+  | "entradasSalidasInventario"
   | "cai"
   | "resultados"
   | "gastos"
@@ -57,6 +58,13 @@ const cards: {
     view: "movimientosInventario",
     color: "#1565c0",
     subtitle: "Kardex, recetas y lotes",
+  },
+  {
+    label: "Entradas/Salidas Inventario",
+    icon: "📋",
+    view: "entradasSalidasInventario",
+    color: "#0d9488",
+    subtitle: "Insumos y bebidas",
   },
   {
     label: "CAI y Facturación",
@@ -182,6 +190,7 @@ import { useDatosNegocio } from "./useDatosNegocio";
 import UsuariosView from "./UsuariosView";
 import InventarioView from "./InventarioView";
 import MovimientosInventarioView from "./MovimientosInventarioView";
+import EntradasSalidasInventarioView from "./EntradasSalidasInventarioView";
 import CaiFacturasView from "./CaiFacturasView";
 import ResultadosView from "./ResultadosView";
 import GastosView from "./GastosView";
@@ -1278,6 +1287,11 @@ const AdminPanel: FC<AdminPanelProps> = (props) => {
             )}
             {currentView === "movimientosInventario" && (
               <MovimientosInventarioView
+                onBack={() => setCurrentView("menu")}
+              />
+            )}
+            {currentView === "entradasSalidasInventario" && (
+              <EntradasSalidasInventarioView
                 onBack={() => setCurrentView("menu")}
               />
             )}

@@ -382,6 +382,16 @@ export default function MovimientosInventarioView({
   } | null>(null);
   const [savingEditMov, setSavingEditMov] = useState(false);
 
+  // --- Modal movimiento masivo (stock) ---
+  const [bulkMovModalOpen, setBulkMovModalOpen] = useState(false);
+  const [bulkMovTipo, setBulkMovTipo] = useState<"entrada" | "salida">(
+    "entrada",
+  );
+  const [bulkMovCantidades, setBulkMovCantidades] = useState<
+    Record<string, string>
+  >({});
+  const [bulkMovSubmitting, setBulkMovSubmitting] = useState(false);
+
   // Mapa de stock_precaucion almacenado en localStorage por id de item
   const [stockPrecaucionMap, setStockPrecaucionMap] = useState<
     Record<string, number>
@@ -430,6 +440,13 @@ export default function MovimientosInventarioView({
     () => productos.find((product) => product.id === recipeForm.productoId),
     [productos, recipeForm.productoId],
   );
+
+  const bulkMovItems = useMemo(() => {
+    if (stockFiltro === "insumos") {
+      return stockInsumos.map((item) => ({ id: item.id, nombre: item.nombre }));
+    }
+    return stockBebidas.map((item) => ({ id: item.id, nombre: item.nombre }));
+  }, [stockBebidas, stockFiltro, stockInsumos]);
   const isRecipeProductComplemento =
     selectedRecipeProduct?.tipo === "complemento";
 
@@ -1177,9 +1194,22 @@ export default function MovimientosInventarioView({
         if (!movMap[m.producto_id])
           movMap[m.producto_id] = { entradas: 0, salidas: 0 };
         const q = numberValue(m.cantidad);
-        if (["entrada", "compra"].includes(m.tipo))
+        const tipo = String(m.tipo || "").toLowerCase();
+        if (
+          [
+            "entrada",
+            "compra",
+            "ajuste_positivo",
+            "produccion_entrada",
+          ].includes(tipo)
+        )
           movMap[m.producto_id].entradas += q;
-        else movMap[m.producto_id].salidas += q;
+        else if (
+          ["salida", "venta", "ajuste_negativo", "produccion_salida"].includes(
+            tipo,
+          )
+        )
+          movMap[m.producto_id].salidas += q;
       }
 
       const rows: StockBebida[] = (prods || []).map((p: any) => {
@@ -1189,16 +1219,15 @@ export default function MovimientosInventarioView({
           costo_promedio: 0,
         };
         const mv = movMap[p.id] || { entradas: 0, salidas: 0 };
-        const stockCalculado = mv.entradas - mv.salidas;
         return {
           id: p.id,
           nombre: p.nombre,
           precio: numberValue(p.precio),
-          stock_actual: stockCalculado,
+          stock_actual: numberValue(s.stock_actual),
           stock_minimo: s.stock_minimo,
           costo_promedio: s.costo_promedio,
-          valor_total: stockCalculado * s.costo_promedio,
-          alerta: stockCalculado <= s.stock_minimo,
+          valor_total: numberValue(s.stock_actual) * s.costo_promedio,
+          alerta: numberValue(s.stock_actual) <= s.stock_minimo,
           total_entradas: mv.entradas,
           total_salidas: mv.salidas,
         };
@@ -1228,14 +1257,27 @@ export default function MovimientosInventarioView({
         if (!movMap[m.insumo_id])
           movMap[m.insumo_id] = { entradas: 0, salidas: 0 };
         const q = numberValue(m.cantidad);
-        if (["entrada", "compra"].includes(m.tipo))
+        const tipo = String(m.tipo || "").toLowerCase();
+        if (
+          [
+            "entrada",
+            "compra",
+            "ajuste_positivo",
+            "produccion_entrada",
+          ].includes(tipo)
+        )
           movMap[m.insumo_id].entradas += q;
-        else movMap[m.insumo_id].salidas += q;
+        else if (
+          ["salida", "venta", "ajuste_negativo", "produccion_salida"].includes(
+            tipo,
+          )
+        )
+          movMap[m.insumo_id].salidas += q;
       }
 
       const rows: StockInsumoRow[] = (insumosData || []).map((ins: any) => {
         const mv = movMap[ins.id] || { entradas: 0, salidas: 0 };
-        const sa = mv.entradas - mv.salidas;
+        const sa = numberValue(ins.stock_actual);
         const cu = numberValue(ins.costo_unitario);
         return {
           id: ins.id,
@@ -1367,6 +1409,70 @@ export default function MovimientosInventarioView({
       setError(err?.message || "Error al guardar el movimiento.");
     } finally {
       setSavingEditMov(false);
+    }
+  };
+
+  const handleOpenBulkMovModal = () => {
+    if (bulkMovItems.length === 0) {
+      setError(
+        `No hay ${stockFiltro === "insumos" ? "insumos" : "bebidas"} para movimiento masivo.`,
+      );
+      return;
+    }
+    setBulkMovTipo("entrada");
+    setBulkMovCantidades({});
+    setBulkMovModalOpen(true);
+  };
+
+  const handleSaveBulkMovement = async () => {
+    setBulkMovSubmitting(true);
+    setError("");
+    setMessage("");
+    try {
+      const selected = bulkMovItems
+        .map((item) => ({
+          ...item,
+          cantidad: numberValue(bulkMovCantidades[item.id]),
+        }))
+        .filter((item) => item.cantidad > 0);
+
+      if (selected.length === 0) {
+        throw new Error("Ingresa al menos un valor mayor a 0.");
+      }
+
+      for (const item of selected) {
+        const { error: rpcError } = await supabase.rpc(
+          "registrar_movimiento_inventario",
+          {
+            p_item_tipo: stockFiltro === "insumos" ? "insumo" : "producto",
+            p_item_id: item.id,
+            p_tipo_movimiento: bulkMovTipo,
+            p_cantidad: item.cantidad,
+            p_costo_unitario: 0,
+            p_referencia_tipo: "manual_masivo",
+            p_referencia_id: null,
+            p_nota: `Movimiento masivo ${stockFiltro}`,
+            p_cajero: usuarioActual?.nombre || "Administrador",
+            p_cajero_id: String(usuarioActual?.id || ""),
+            p_modo_estricto: true,
+          },
+        );
+        if (rpcError) throw rpcError;
+      }
+
+      setBulkMovModalOpen(false);
+      setBulkMovCantidades({});
+      setMessage(`Se registraron ${selected.length} movimientos masivos.`);
+      await loadEverything();
+      if (stockFiltro === "insumos") {
+        await loadStockInsumos();
+      } else {
+        await loadStockBebidas();
+      }
+    } catch (err: any) {
+      setError(err?.message || "No se pudo registrar el movimiento masivo.");
+    } finally {
+      setBulkMovSubmitting(false);
     }
   };
 
@@ -2271,6 +2377,13 @@ export default function MovimientosInventarioView({
                       🖨 Toma física {stockFiltro}
                     </button>
                   )}
+                  <button
+                    className="inventory-btn primary"
+                    onClick={handleOpenBulkMovModal}
+                    disabled={stockLoading}
+                  >
+                    📥📤 Entrada/Salida masiva
+                  </button>
                 </div>
 
                 {/* ── Tabla insumos ─────────────────────────────────────── */}
@@ -4003,6 +4116,125 @@ export default function MovimientosInventarioView({
                 disabled={creatingInsumo || !newInsumoForm.nombre.trim()}
               >
                 {creatingInsumo ? "Guardando..." : "Crear insumo"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: Entrada/Salida masiva ─────────────────────────────── */}
+      {bulkMovModalOpen && (
+        <div
+          className="inventory-modal-overlay"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setBulkMovModalOpen(false);
+          }}
+        >
+          <div className="inventory-modal" style={{ maxWidth: 860 }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 16,
+              }}
+            >
+              <div>
+                <h3 style={{ margin: 0, color: "#0f172a" }}>
+                  Entrada/Salida masiva
+                </h3>
+                <p style={{ margin: "4px 0 0", color: "#64748b" }}>
+                  Filtro activo:{" "}
+                  {stockFiltro === "insumos" ? "Insumos" : "Bebidas"}
+                </p>
+              </div>
+              <button
+                className="inventory-btn secondary"
+                style={{ padding: "4px 12px" }}
+                onClick={() => setBulkMovModalOpen(false)}
+                disabled={bulkMovSubmitting}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+              {MOVEMENT_TYPES.map((item) => (
+                <button
+                  key={item.value}
+                  type="button"
+                  className={`inventory-btn ${bulkMovTipo === item.value ? "primary" : "secondary"}`}
+                  onClick={() =>
+                    setBulkMovTipo(item.value as "entrada" | "salida")
+                  }
+                  disabled={bulkMovSubmitting}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+
+            <div style={{ overflowX: "auto", maxHeight: "52vh" }}>
+              <table className="inventory-table">
+                <thead>
+                  <tr>
+                    <th>Nombre</th>
+                    <th style={{ textAlign: "right" }}>
+                      Valor a {bulkMovTipo === "entrada" ? "entrar" : "salir"}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bulkMovItems.map((item) => (
+                    <tr key={item.id}>
+                      <td>{item.nombre}</td>
+                      <td style={{ textAlign: "right", minWidth: 180 }}>
+                        <input
+                          className="inventory-input"
+                          type="number"
+                          min="0"
+                          step="0.0001"
+                          value={bulkMovCantidades[item.id] || ""}
+                          onChange={(e) =>
+                            setBulkMovCantidades((prev) => ({
+                              ...prev,
+                              [item.id]: e.target.value,
+                            }))
+                          }
+                          placeholder="0"
+                          disabled={bulkMovSubmitting}
+                          style={{ textAlign: "right" }}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                gap: 10,
+                justifyContent: "flex-end",
+                marginTop: 16,
+              }}
+            >
+              <button
+                className="inventory-btn secondary"
+                onClick={() => setBulkMovModalOpen(false)}
+                disabled={bulkMovSubmitting}
+              >
+                Cancelar
+              </button>
+              <button
+                className="inventory-btn primary"
+                onClick={handleSaveBulkMovement}
+                disabled={bulkMovSubmitting}
+              >
+                {bulkMovSubmitting
+                  ? "Guardando..."
+                  : `Guardar ${bulkMovTipo} masiva`}
               </button>
             </div>
           </div>
