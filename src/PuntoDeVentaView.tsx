@@ -173,6 +173,10 @@ export default function PuntoDeVentaView({
   const [showCierre, setShowCierre] = useState(false);
   const [showResumen, setShowResumen] = useState(false);
   const [resumenLoading, setResumenLoading] = useState(false);
+  const [sincronizandoCaja, setSincronizandoCaja] = useState(false);
+  const [sincronizandoCajaDestino, setSincronizandoCajaDestino] = useState<
+    "resumen" | "cierre" | null
+  >(null);
   const [resumenData, setResumenData] = useState<{
     efectivo: number;
     tarjeta: number;
@@ -593,10 +597,6 @@ export default function PuntoDeVentaView({
         return;
       }
 
-      // Cada vez que se abre el resumen: sincronizar pendientes primero.
-      await sincronizarAperturaPendiente();
-      await sincronizarTodo();
-
       const { data: aperturaSupabase, error: aperturaError } = await supabase
         .from("cierres")
         .select("id,cajero_id,caja,fecha,fecha_apertura,fecha_cierre,estado")
@@ -617,7 +617,8 @@ export default function PuntoDeVentaView({
 
       const fechaInicio =
         aperturaSupabase.fecha_apertura ?? aperturaSupabase.fecha ?? "";
-      const fechaFin = aperturaSupabase.fecha_cierre ?? new Date().toISOString();
+      const fechaFin =
+        aperturaSupabase.fecha_cierre ?? new Date().toISOString();
       const tsInicio = new Date(fechaInicio).getTime();
       const tsFin = new Date(fechaFin).getTime();
 
@@ -651,7 +652,10 @@ export default function PuntoDeVentaView({
       if (gastosError) throw gastosError;
 
       const parseTs = (fechaHora?: string | null, fecha?: string | null) => {
-        const raw = (fechaHora && fechaHora.trim()) || (fecha && `${fecha}T00:00:00`) || "";
+        const raw =
+          (fechaHora && fechaHora.trim()) ||
+          (fecha && `${fecha}T00:00:00`) ||
+          "";
         const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
         const ts = Date.parse(normalized);
         return Number.isFinite(ts) ? ts : 0;
@@ -662,7 +666,9 @@ export default function PuntoDeVentaView({
         return ts >= tsInicio && ts <= tsFin;
       });
 
-      const ventasNormales = ventasTurno.filter((v: any) => v.es_donacion !== true);
+      const ventasNormales = ventasTurno.filter(
+        (v: any) => v.es_donacion !== true,
+      );
       const donaciones = ventasTurno.filter((v: any) => v.es_donacion === true);
 
       const gastosTurno = (gastosData || []).filter((g: any) => {
@@ -684,7 +690,8 @@ export default function PuntoDeVentaView({
                 : (venta.productos ?? []);
             productos.forEach((producto: any) => {
               if ((producto.tipo ?? "").toLowerCase() === tipo.toLowerCase()) {
-                count += factor * parseInt(producto.cantidad ?? producto.qty ?? 1);
+                count +=
+                  factor * parseInt(producto.cantidad ?? producto.qty ?? 1);
               }
             });
           } catch {
@@ -744,6 +751,58 @@ export default function PuntoDeVentaView({
     } finally {
       setResumenLoading(false);
     }
+  }
+
+  const esperar = (ms: number) =>
+    new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+  async function prepararDatosCaja(
+    destino: "resumen" | "cierre",
+  ): Promise<boolean> {
+    if (!navigator.onLine) {
+      setShowNoConnectionModal(true);
+      return false;
+    }
+
+    if (!usuarioActual?.id) {
+      alert("No se pudo identificar el usuario actual.");
+      return false;
+    }
+
+    setSincronizandoCajaDestino(destino);
+    setSincronizandoCaja(true);
+
+    try {
+      await Promise.all([
+        (async () => {
+          await sincronizarAperturaPendiente();
+          await sincronizarTodo();
+        })(),
+        esperar(5000),
+      ]);
+      return true;
+    } catch (error) {
+      console.error("Error sincronizando datos antes de abrir caja:", error);
+      alert(
+        "No se pudo completar la sincronización con el servidor. Intenta nuevamente.",
+      );
+      return false;
+    } finally {
+      setSincronizandoCaja(false);
+      setSincronizandoCajaDestino(null);
+    }
+  }
+
+  async function abrirResumenCaja() {
+    const listo = await prepararDatosCaja("resumen");
+    if (!listo) return;
+    await fetchResumenCaja();
+  }
+
+  async function abrirCierreCaja() {
+    const listo = await prepararDatosCaja("cierre");
+    if (!listo) return;
+    setShowCierre(true);
   }
 
   // Función para obtener historial de ventas del turno actual
@@ -1015,7 +1074,12 @@ export default function PuntoDeVentaView({
       };
       const isSalida = (movType: any): boolean => {
         const t = normalizeMovType(movType);
-        return ["salida", "venta", "ajuste_negativo", "produccion_salida"].includes(t);
+        return [
+          "salida",
+          "venta",
+          "ajuste_negativo",
+          "produccion_salida",
+        ].includes(t);
       };
 
       const formatDay = (date: Date) => {
@@ -1100,10 +1164,7 @@ export default function PuntoDeVentaView({
             if (movsData?.length) movimientos = movsData;
           }
 
-          if (
-            tipo === "bebidas" &&
-            productos.length === 0
-          ) {
+          if (tipo === "bebidas" && productos.length === 0) {
             const { data: prodsData } = await supabase
               .from("productos")
               .select("id, nombre, tipo")
@@ -2748,7 +2809,9 @@ export default function PuntoDeVentaView({
       if (movimientos.length === 0) {
         const { data } = await supabase
           .from("movimientos_inventario")
-          .select("insumo_id, item_tipo, tipo, cantidad, fecha_hora, created_at")
+          .select(
+            "insumo_id, item_tipo, tipo, cantidad, fecha_hora, created_at",
+          )
           .eq("item_tipo", "insumo")
           .eq("insumo_id", piezasId)
           .gte("created_at", start)
@@ -2890,7 +2953,10 @@ export default function PuntoDeVentaView({
       setIngresoPiezasCantidad("");
       await fetchPiezasPolloDia();
       if (showInsumosBebidasDiaModal) {
-        await cargarInsumosBebidasDelDia(inventarioDiaTipo, inventarioDiaPeriodo);
+        await cargarInsumosBebidasDelDia(
+          inventarioDiaTipo,
+          inventarioDiaPeriodo,
+        );
       }
     } catch (e: any) {
       alert(e?.message || "No se pudo registrar el ingreso.");
@@ -9799,6 +9865,105 @@ export default function PuntoDeVentaView({
         </div>
       )}
 
+      {sincronizandoCaja && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            width: "100vw",
+            height: "100vh",
+            background: "rgba(0,0,0,0.65)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 150000,
+            padding: 16,
+          }}
+        >
+          <div
+            style={{
+              width: "min(460px, 100%)",
+              borderRadius: 16,
+              background: theme === "lite" ? "#ffffff" : "#1f2937",
+              color: theme === "lite" ? "#0f172a" : "#f8fafc",
+              boxShadow: "0 18px 48px rgba(0,0,0,0.35)",
+              padding: "28px 24px",
+              textAlign: "center",
+            }}
+          >
+            <style>{`
+              @keyframes nubeFloat {
+                0% { transform: translateY(0px); }
+                50% { transform: translateY(-4px); }
+                100% { transform: translateY(0px); }
+              }
+              @keyframes puntoParpadeo {
+                0%, 20% { opacity: 0.25; }
+                50% { opacity: 1; }
+                100% { opacity: 0.25; }
+              }
+            `}</style>
+            <div
+              style={{
+                fontSize: 56,
+                marginBottom: 10,
+                animation: "nubeFloat 1.4s ease-in-out infinite",
+              }}
+            >
+              ☁️
+            </div>
+            <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 8 }}>
+              Descargando datos de la nube
+            </div>
+            <div
+              style={{
+                fontSize: 14,
+                opacity: 0.85,
+                lineHeight: 1.5,
+                marginBottom: 14,
+              }}
+            >
+              Sincronizando ventas, pedidos, gastos, devoluciones y movimientos
+              pendientes antes de abrir{" "}
+              {sincronizandoCajaDestino === "cierre"
+                ? "Cierre de Caja"
+                : "Resumen de Caja"}
+              .
+            </div>
+            <div
+              style={{
+                display: "inline-flex",
+                gap: 6,
+                alignItems: "center",
+                fontWeight: 700,
+                color: "#2563eb",
+                fontSize: 15,
+              }}
+            >
+              <span>Procesando</span>
+              <span style={{ animation: "puntoParpadeo 1s infinite" }}>•</span>
+              <span
+                style={{
+                  animation: "puntoParpadeo 1s infinite",
+                  animationDelay: "0.2s",
+                }}
+              >
+                •
+              </span>
+              <span
+                style={{
+                  animation: "puntoParpadeo 1s infinite",
+                  animationDelay: "0.4s",
+                }}
+              >
+                •
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Modal aviso: pedidos pendientes al intentar cerrar caja */}
       {showCierrePedidosWarning && (
         <div
@@ -11353,8 +11518,7 @@ export default function PuntoDeVentaView({
                   <button
                     className="menu-btn"
                     onClick={() => {
-                      fetchResumenCaja();
-                      setShowResumen(true);
+                      abrirResumenCaja();
                       closeMenuAnimated();
                     }}
                     style={{
@@ -11379,7 +11543,7 @@ export default function PuntoDeVentaView({
                         setShowCierrePedidosWarning(true);
                         return;
                       }
-                      setShowCierre(true);
+                      abrirCierreCaja();
                     }}
                     style={{
                       background: "linear-gradient(135deg, #fffbeb, #fef3c7)",
@@ -11624,8 +11788,12 @@ export default function PuntoDeVentaView({
                   >
                     <span className="btn-icon">🍗</span>
                     <span>
-                      <div className="btn-label">Ingreso de piezas de pollo</div>
-                      <div className="btn-desc">Registrar entrada a inventario</div>
+                      <div className="btn-label">
+                        Ingreso de piezas de pollo
+                      </div>
+                      <div className="btn-desc">
+                        Registrar entrada a inventario
+                      </div>
                     </span>
                   </button>
                   <button
@@ -11743,7 +11911,9 @@ export default function PuntoDeVentaView({
                 setShowOptionsMenu(true);
               }}
               style={{
+                display: "block",
                 width: "100%",
+                boxSizing: "border-box",
                 border: "1px solid #cbd5e1",
                 borderRadius: 8,
                 padding: "10px 12px",
@@ -11941,11 +12111,13 @@ export default function PuntoDeVentaView({
                 marginBottom: 12,
               }}
             >
-              {([
-                ["hoy", "Hoy"],
-                ["semana", "Semana"],
-                ["mes", "Mes"],
-              ] as const).map(([periodo, label]) => (
+              {(
+                [
+                  ["hoy", "Hoy"],
+                  ["semana", "Semana"],
+                  ["mes", "Mes"],
+                ] as const
+              ).map(([periodo, label]) => (
                 <button
                   key={periodo}
                   className="inventory-btn secondary"
@@ -11955,7 +12127,8 @@ export default function PuntoDeVentaView({
                   style={{
                     background:
                       inventarioDiaPeriodo === periodo ? "#0f172a" : "#f8fafc",
-                    color: inventarioDiaPeriodo === periodo ? "#fff" : "#334155",
+                    color:
+                      inventarioDiaPeriodo === periodo ? "#fff" : "#334155",
                     border: "1px solid #cbd5e1",
                     minWidth: 94,
                   }}
@@ -12035,7 +12208,9 @@ export default function PuntoDeVentaView({
                       ? "linear-gradient(135deg, #ffedd5, #fed7aa)"
                       : "linear-gradient(135deg, #f8fafc, #f1f5f9)",
                   color:
-                    inventarioDiaTipo === "piezas_pollo" ? "#9a3412" : "#475569",
+                    inventarioDiaTipo === "piezas_pollo"
+                      ? "#9a3412"
+                      : "#475569",
                   border: "1px solid #cbd5e1",
                   padding: "10px 14px",
                   flex: 1,
