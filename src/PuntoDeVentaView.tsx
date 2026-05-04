@@ -92,7 +92,8 @@ interface Seleccion {
   piezas?: string; // "PIEZAS VARIAS", "PECHUGA", "ALA, CADERA", etc.
 }
 
-type InventarioDiaTipo = "insumos" | "bebidas";
+type InventarioDiaTipo = "insumos" | "bebidas" | "piezas_pollo";
+type InventarioDiaPeriodo = "hoy" | "semana" | "mes";
 
 interface InventarioDiaRow {
   id: string;
@@ -205,15 +206,23 @@ export default function PuntoDeVentaView({
   // Menu y modal relacionados
   const [showOptionsMenu, setShowOptionsMenu] = useState(false);
   const [menuClosing, setMenuClosing] = useState(false);
+  const [showMenuUnlockModal, setShowMenuUnlockModal] = useState(false);
+  const [menuUnlockPass, setMenuUnlockPass] = useState("");
+  const [menuUnlockError, setMenuUnlockError] = useState("");
   const [showInsumosBebidasDiaModal, setShowInsumosBebidasDiaModal] =
     useState(false);
   const [inventarioDiaTipo, setInventarioDiaTipo] =
     useState<InventarioDiaTipo>("insumos");
+  const [inventarioDiaPeriodo, setInventarioDiaPeriodo] =
+    useState<InventarioDiaPeriodo>("hoy");
   const [inventarioDiaRows, setInventarioDiaRows] = useState<
     InventarioDiaRow[]
   >([]);
   const [inventarioDiaFecha, setInventarioDiaFecha] = useState("");
   const [inventarioDiaLoading, setInventarioDiaLoading] = useState(false);
+  const [showIngresoPiezasModal, setShowIngresoPiezasModal] = useState(false);
+  const [ingresoPiezasCantidad, setIngresoPiezasCantidad] = useState("");
+  const [ingresoPiezasGuardando, setIngresoPiezasGuardando] = useState(false);
   // Modal DATOS DE FACTURACIÓN
   const [showDatosFactModal, setShowDatosFactModal] = useState(false);
   const [caiFactData, setCaiFactData] = useState<any>(null);
@@ -964,8 +973,12 @@ export default function PuntoDeVentaView({
     }
   }
 
-  async function cargarInsumosBebidasDelDia(tipo: InventarioDiaTipo) {
+  async function cargarInsumosBebidasDelDia(
+    tipo: InventarioDiaTipo,
+    periodo: InventarioDiaPeriodo = "hoy",
+  ) {
     setInventarioDiaTipo(tipo);
+    setInventarioDiaPeriodo(periodo);
     setInventarioDiaLoading(true);
     try {
       const toTs = (value: any): number => {
@@ -980,28 +993,83 @@ export default function PuntoDeVentaView({
         const n = Number(v);
         return Number.isFinite(n) ? n : 0;
       };
-      const isSalida = (movType: any): boolean => {
-        const t = String(movType || "")
+      const normalizeMovType = (value: any): string =>
+        String(value || "")
+          .toLowerCase()
+          .trim()
+          .replace(/[\s-]+/g, "_");
+      const normalizeText = (value: string): string =>
+        String(value || "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
           .toLowerCase()
           .trim();
-        return !(t === "entrada" || t === "compra");
+      const isEntrada = (movType: any): boolean => {
+        const t = normalizeMovType(movType);
+        return [
+          "entrada",
+          "compra",
+          "ajuste_positivo",
+          "produccion_entrada",
+        ].includes(t);
+      };
+      const isSalida = (movType: any): boolean => {
+        const t = normalizeMovType(movType);
+        return ["salida", "venta", "ajuste_negativo", "produccion_salida"].includes(t);
       };
 
-      const { start, end, day } = getLocalDayRange();
+      const formatDay = (date: Date) => {
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, "0");
+        const d = String(date.getDate()).padStart(2, "0");
+        return `${y}-${m}-${d}`;
+      };
+
+      const getRange = (selected: InventarioDiaPeriodo) => {
+        if (selected === "hoy") {
+          const { start, end, day } = getLocalDayRange();
+          return { start, end, etiqueta: day };
+        }
+
+        const now = new Date();
+        if (selected === "semana") {
+          const monday = new Date(now);
+          monday.setHours(0, 0, 0, 0);
+          const day = monday.getDay();
+          const diff = day === 0 ? -6 : 1 - day;
+          monday.setDate(monday.getDate() + diff);
+          const start = `${formatDay(monday)} 00:00:00`;
+          const end = `${formatDay(now)} 23:59:59`;
+          return {
+            start,
+            end,
+            etiqueta: `${formatDay(monday)} a ${formatDay(now)}`,
+          };
+        }
+
+        const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+        const start = `${formatDay(firstDay)} 00:00:00`;
+        const end = `${formatDay(now)} 23:59:59`;
+        return {
+          start,
+          end,
+          etiqueta: `${formatDay(firstDay)} a ${formatDay(now)}`,
+        };
+      };
+
+      const { start, end, etiqueta } = getRange(periodo);
       const tsStart = Date.parse(start);
       const tsEnd = Date.parse(end);
-      setInventarioDiaFecha(day);
+      setInventarioDiaFecha(etiqueta);
 
       let movimientosIdb: any[] = [];
       let productosIdb: any[] = [];
       let insumosIdb: any[] = [];
-      let stockProductosIdb: any[] = [];
 
       try {
         movimientosIdb = await getAll<any>(STORE.MOVIMIENTOS_INVENTARIO);
         if (tipo === "bebidas") {
           productosIdb = await getAll<any>(STORE.PRODUCTOS);
-          stockProductosIdb = await getAll<any>(STORE.STOCK_PRODUCTOS);
         } else {
           insumosIdb = await getAll<any>(STORE.INSUMOS);
         }
@@ -1012,13 +1080,12 @@ export default function PuntoDeVentaView({
       const necesitaFallbackMovs = movimientosIdb.length === 0;
       const necesitaFallbackCatalogo =
         tipo === "bebidas"
-          ? productosIdb.length === 0 || stockProductosIdb.length === 0
+          ? productosIdb.length === 0
           : insumosIdb.length === 0;
 
       let movimientos = movimientosIdb;
       let productos = productosIdb;
       let insumos = insumosIdb;
-      let stockProductos = stockProductosIdb;
 
       if (necesitaFallbackMovs || necesitaFallbackCatalogo) {
         try {
@@ -1029,29 +1096,22 @@ export default function PuntoDeVentaView({
                 "id, item_tipo, insumo_id, producto_id, tipo, cantidad, fecha_hora, created_at",
               )
               .order("id", { ascending: false })
-              .limit(2500);
+              .limit(3500);
             if (movsData?.length) movimientos = movsData;
           }
 
           if (
             tipo === "bebidas" &&
-            (productos.length === 0 || stockProductos.length === 0)
+            productos.length === 0
           ) {
-            const [{ data: prodsData }, { data: stocksData }] =
-              await Promise.all([
-                supabase
-                  .from("productos")
-                  .select("id, nombre, tipo")
-                  .eq("tipo", "bebida"),
-                supabase
-                  .from("stock_productos")
-                  .select("producto_id, stock_actual"),
-              ]);
+            const { data: prodsData } = await supabase
+              .from("productos")
+              .select("id, nombre, tipo")
+              .eq("tipo", "bebida");
             if (prodsData?.length) productos = prodsData;
-            if (stocksData?.length) stockProductos = stocksData;
           }
 
-          if (tipo === "insumos" && insumos.length === 0) {
+          if (tipo !== "bebidas" && insumos.length === 0) {
             const { data: insData } = await supabase
               .from("insumos")
               .select("id, nombre, stock_actual");
@@ -1062,7 +1122,7 @@ export default function PuntoDeVentaView({
         }
       }
 
-      const movimientosDia = (movimientos || []).filter((m: any) => {
+      const movimientosRango = (movimientos || []).filter((m: any) => {
         const ts = toTs(m.fecha_hora || m.created_at);
         return ts >= tsStart && ts <= tsEnd;
       });
@@ -1074,81 +1134,110 @@ export default function PuntoDeVentaView({
         const nombrePorId = new Map<string, string>(
           bebidas.map((p: any) => [String(p.id), String(p.nombre || "Bebida")]),
         );
-        const stockPorId = new Map<string, number>(
-          (stockProductos || []).map((s: any) => [
-            String(s.producto_id),
-            num(s.stock_actual),
-          ]),
-        );
 
-        const vendidoPorId = new Map<string, number>();
-        for (const m of movimientosDia) {
+        const salidasPorId = new Map<string, number>();
+        const entradasPorId = new Map<string, number>();
+        for (const m of movimientosRango) {
           if (String(m.item_tipo) !== "producto") continue;
-          if (!isSalida(m.tipo)) continue;
           const productoId = String(m.producto_id || "");
           if (!productoId) continue;
           if (!nombrePorId.has(productoId)) continue;
-          vendidoPorId.set(
-            productoId,
-            num(vendidoPorId.get(productoId)) + num(m.cantidad),
-          );
+          if (isSalida(m.tipo)) {
+            salidasPorId.set(
+              productoId,
+              num(salidasPorId.get(productoId)) + num(m.cantidad),
+            );
+            continue;
+          }
+          if (isEntrada(m.tipo)) {
+            entradasPorId.set(
+              productoId,
+              num(entradasPorId.get(productoId)) + num(m.cantidad),
+            );
+          }
         }
 
-        const rows: InventarioDiaRow[] = Array.from(vendidoPorId.entries())
+        const rows: InventarioDiaRow[] = Array.from(salidasPorId.entries())
           .map(([id, vendido]) => ({
             id,
             nombre: nombrePorId.get(id) || "Bebida",
             vendido,
-            stock: num(stockPorId.get(id)),
+            stock: num(entradasPorId.get(id)) - vendido,
           }))
           .sort(
             (a, b) => b.vendido - a.vendido || a.nombre.localeCompare(b.nombre),
           );
 
         setInventarioDiaRows(rows);
-      } else {
-        const nombrePorId = new Map<string, string>(
-          (insumos || []).map((ins: any) => [
-            String(ins.id),
-            String(ins.nombre || "Insumo"),
-          ]),
-        );
-        const stockPorId = new Map<string, number>(
-          (insumos || []).map((ins: any) => [
-            String(ins.id),
-            num(ins.stock_actual),
-          ]),
-        );
+        return;
+      }
 
-        const vendidoPorId = new Map<string, number>();
-        for (const m of movimientosDia) {
-          if (String(m.item_tipo) !== "insumo") continue;
-          if (!isSalida(m.tipo)) continue;
-          const insumoId = String(m.insumo_id || "");
-          if (!insumoId) continue;
-          vendidoPorId.set(
+      const nombrePorId = new Map<string, string>(
+        (insumos || []).map((ins: any) => [
+          String(ins.id),
+          String(ins.nombre || "Insumo"),
+        ]),
+      );
+
+      const salidasPorId = new Map<string, number>();
+      const entradasPorId = new Map<string, number>();
+      for (const m of movimientosRango) {
+        if (String(m.item_tipo) !== "insumo") continue;
+        const insumoId = String(m.insumo_id || "");
+        if (!insumoId) continue;
+        if (isSalida(m.tipo)) {
+          salidasPorId.set(
             insumoId,
-            num(vendidoPorId.get(insumoId)) + num(m.cantidad),
+            num(salidasPorId.get(insumoId)) + num(m.cantidad),
+          );
+          continue;
+        }
+        if (isEntrada(m.tipo)) {
+          entradasPorId.set(
+            insumoId,
+            num(entradasPorId.get(insumoId)) + num(m.cantidad),
           );
         }
-
-        const rows: InventarioDiaRow[] = Array.from(vendidoPorId.entries())
-          .map(([id, vendido]) => ({
-            id,
-            nombre: nombrePorId.get(id) || "Insumo",
-            vendido,
-            stock: num(stockPorId.get(id)),
-          }))
-          .sort(
-            (a, b) => b.vendido - a.vendido || a.nombre.localeCompare(b.nombre),
-          );
-
-        setInventarioDiaRows(rows);
       }
+
+      if (tipo === "piezas_pollo") {
+        const piezas = (insumos || []).find(
+          (ins: any) => normalizeText(ins.nombre) === "piezas de pollo",
+        );
+
+        if (!piezas) {
+          setInventarioDiaRows([]);
+          return;
+        }
+
+        const id = String(piezas.id);
+        setInventarioDiaRows([
+          {
+            id,
+            nombre: String(piezas.nombre || "Piezas de pollo"),
+            vendido: num(salidasPorId.get(id)),
+            stock: num(entradasPorId.get(id)) - num(salidasPorId.get(id)),
+          },
+        ]);
+        return;
+      }
+
+      const rows: InventarioDiaRow[] = Array.from(salidasPorId.entries())
+        .map(([id, vendido]) => ({
+          id,
+          nombre: nombrePorId.get(id) || "Insumo",
+          vendido,
+          stock: num(entradasPorId.get(id)) - vendido,
+        }))
+        .sort(
+          (a, b) => b.vendido - a.vendido || a.nombre.localeCompare(b.nombre),
+        );
+
+      setInventarioDiaRows(rows);
     } catch (err) {
       console.error("[InventarioDia] Error cargando lista:", err);
       setInventarioDiaRows([]);
-      alert("No se pudo cargar la lista del día.");
+      alert("No se pudo cargar la lista.");
     } finally {
       setInventarioDiaLoading(false);
     }
@@ -1160,8 +1249,19 @@ export default function PuntoDeVentaView({
       return;
     }
 
-    const titulo =
-      inventarioDiaTipo === "insumos" ? "INSUMOS DEL DÍA" : "BEBIDAS DEL DÍA";
+    const baseTitulo =
+      inventarioDiaTipo === "insumos"
+        ? "INSUMOS"
+        : inventarioDiaTipo === "bebidas"
+          ? "BEBIDAS"
+          : "PIEZAS DE POLLO";
+    const etiquetaPeriodo =
+      inventarioDiaPeriodo === "hoy"
+        ? "HOY"
+        : inventarioDiaPeriodo === "semana"
+          ? "SEMANA"
+          : "MES";
+    const titulo = `${baseTitulo} - ${etiquetaPeriodo}`;
     const negocio = datosNegocio?.nombre_negocio || NOMBRE_NEGOCIO;
 
     const filas = inventarioDiaRows
@@ -1199,7 +1299,7 @@ export default function PuntoDeVentaView({
               <tr>
                 <th>Nombre</th>
                 <th class="r">Vendido</th>
-                <th class="r">Stock</th>
+                <th class="r">Stock (E-S)</th>
               </tr>
             </thead>
             <tbody>${filas}</tbody>
@@ -2503,6 +2603,7 @@ export default function PuntoDeVentaView({
   // Estados conteo del turno (chips del header)
   const [platillosTurno, setPlatillosTurno] = useState(0);
   const [bebidasTurno, setBebidasTurno] = useState(0);
+  const [piezasPolloDia, setPiezasPolloDia] = useState(0);
 
   // Estados para control de apertura
   const [aperturaRegistrada, setAperturaRegistrada] = useState<boolean | null>(
@@ -2569,41 +2670,241 @@ export default function PuntoDeVentaView({
         if (resumenIDB) {
           setPlatillosTurno(Math.max(0, resumenIDB.total_platillos || 0));
           setBebidasTurno(Math.max(0, resumenIDB.total_bebidas || 0));
+          await fetchPiezasPolloDia();
           return;
         }
       }
 
       setPlatillosTurno(0);
       setBebidasTurno(0);
-    } catch (_) {}
+      await fetchPiezasPolloDia();
+    } catch (_) {
+      setPiezasPolloDia(0);
+    }
+  };
+
+  const fetchPiezasPolloDia = async () => {
+    try {
+      const normalizeText = (value: string): string =>
+        String(value || "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .toLowerCase()
+          .trim();
+      const num = (value: any): number => {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+      const toTs = (value: any): number => {
+        if (!value) return 0;
+        if (typeof value === "number") return value;
+        const raw = String(value).trim();
+        const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+        const ts = Date.parse(normalized);
+        return Number.isFinite(ts) ? ts : 0;
+      };
+      const isSalida = (movType: any): boolean => {
+        const t = String(movType || "")
+          .toLowerCase()
+          .trim();
+        return !(
+          t === "entrada" ||
+          t === "compra" ||
+          t === "ajuste_positivo" ||
+          t === "produccion_entrada"
+        );
+      };
+
+      let insumos: any[] = [];
+      let movimientos: any[] = [];
+
+      try {
+        insumos = await getAll<any>(STORE.INSUMOS);
+        movimientos = await getAll<any>(STORE.MOVIMIENTOS_INVENTARIO);
+      } catch {
+        insumos = [];
+        movimientos = [];
+      }
+
+      if (insumos.length === 0) {
+        const { data } = await supabase.from("insumos").select("id, nombre");
+        if (data?.length) insumos = data;
+      }
+
+      const piezas = insumos.find(
+        (ins: any) => normalizeText(ins.nombre) === "piezas de pollo",
+      );
+
+      if (!piezas) {
+        setPiezasPolloDia(0);
+        return;
+      }
+
+      const piezasId = String(piezas.id);
+      const { start, end } = getLocalDayRange();
+      const tsStart = Date.parse(start);
+      const tsEnd = Date.parse(end);
+
+      if (movimientos.length === 0) {
+        const { data } = await supabase
+          .from("movimientos_inventario")
+          .select("insumo_id, item_tipo, tipo, cantidad, fecha_hora, created_at")
+          .eq("item_tipo", "insumo")
+          .eq("insumo_id", piezasId)
+          .gte("created_at", start)
+          .lte("created_at", end);
+        if (data?.length) movimientos = data;
+      }
+
+      const vendidoDia = (movimientos || []).reduce((acc: number, m: any) => {
+        if (String(m.item_tipo) !== "insumo") return acc;
+        if (String(m.insumo_id || "") !== piezasId) return acc;
+        if (!isSalida(m.tipo)) return acc;
+        const ts = toTs(m.fecha_hora || m.created_at);
+        if (ts < tsStart || ts > tsEnd) return acc;
+        return acc + num(m.cantidad);
+      }, 0);
+
+      setPiezasPolloDia(Math.max(0, vendidoDia));
+    } catch {
+      setPiezasPolloDia(0);
+    }
+  };
+
+  const validarClaveMenu = async (pass: string): Promise<boolean> => {
+    const trimmed = pass.trim();
+    if (!trimmed) return false;
+
+    let autorizado = trimmed.toLowerCase() === "admin";
+    if (autorizado) return true;
+
+    try {
+      const usuarios = await getUsuariosLocal();
+      autorizado = usuarios.some(
+        (u: any) =>
+          String(u?.rol || "").toLowerCase() === "admin" &&
+          String(u?.clave || "") === trimmed,
+      );
+    } catch {
+      autorizado = false;
+    }
+
+    return autorizado;
+  };
+
+  const guardarIngresoPiezasPollo = async () => {
+    const cantidad = Number.parseInt(ingresoPiezasCantidad.trim(), 10);
+    if (!Number.isFinite(cantidad) || cantidad <= 0) {
+      alert("Ingresa una cantidad entera mayor a 0.");
+      return;
+    }
+
+    setIngresoPiezasGuardando(true);
+    try {
+      const normalizeText = (value: string): string =>
+        String(value || "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .toLowerCase()
+          .trim();
+
+      let insumos: any[] = [];
+      try {
+        insumos = await getAll<any>(STORE.INSUMOS);
+      } catch {
+        insumos = [];
+      }
+
+      let piezas = insumos.find(
+        (ins: any) => normalizeText(ins.nombre) === "piezas de pollo",
+      );
+
+      if (!piezas) {
+        const { data: insData } = await supabase
+          .from("insumos")
+          .select("id, nombre, stock_actual")
+          .ilike("nombre", "piezas de pollo")
+          .limit(1)
+          .maybeSingle();
+        if (insData) piezas = insData;
+      }
+
+      if (!piezas?.id) {
+        throw new Error("No existe el insumo 'Piezas de pollo'.");
+      }
+
+      const piezasId = String(piezas.id);
+      const { error: movError } = await supabase.rpc(
+        "registrar_movimiento_inventario",
+        {
+          p_item_tipo: "insumo",
+          p_item_id: piezasId,
+          p_tipo_movimiento: "entrada",
+          p_cantidad: cantidad,
+          p_costo_unitario: 0,
+          p_referencia_tipo: "manual_pos_piezas_pollo",
+          p_referencia_id: null,
+          p_nota: "Ingreso manual de piezas de pollo desde POS",
+          p_cajero: usuarioActual?.nombre || "Cajero",
+          p_cajero_id: String(usuarioActual?.id || ""),
+          p_modo_estricto: false,
+        },
+      );
+
+      if (movError) throw movError;
+
+      try {
+        const stockActual = Number(piezas.stock_actual || 0);
+        await upsertOne(STORE.INSUMOS, {
+          ...piezas,
+          id: piezasId,
+          stock_actual: stockActual + cantidad,
+          updated_at: new Date().toISOString(),
+        });
+      } catch {
+        // no-op
+      }
+
+      try {
+        await upsertOne(STORE.MOVIMIENTOS_INVENTARIO, {
+          id: -Date.now(),
+          item_tipo: "insumo",
+          insumo_id: piezasId,
+          tipo: "entrada",
+          cantidad,
+          costo_unitario: 0,
+          nota: "Ingreso manual de piezas de pollo desde POS",
+          referencia_tipo: "manual_pos_piezas_pollo",
+          referencia_id: null,
+          cajero: usuarioActual?.nombre || "Cajero",
+          cajero_id: String(usuarioActual?.id || ""),
+          fecha_hora: formatToHondurasLocal(new Date()),
+          created_at: new Date().toISOString(),
+          pending_sync: false,
+        });
+      } catch {
+        // no-op
+      }
+
+      setShowIngresoPiezasModal(false);
+      setIngresoPiezasCantidad("");
+      await fetchPiezasPolloDia();
+      if (showInsumosBebidasDiaModal) {
+        await cargarInsumosBebidasDelDia(inventarioDiaTipo, inventarioDiaPeriodo);
+      }
+    } catch (e: any) {
+      alert(e?.message || "No se pudo registrar el ingreso.");
+    } finally {
+      setIngresoPiezasGuardando(false);
+    }
   };
 
   const openMenu = async () => {
     if (posConfig.menu_bloqueado) {
-      const clave = window.prompt("🔐 Menú bloqueado. Ingrese clave de admin:");
-      if (!clave) return;
-
-      const pass = clave.trim();
-      const passLower = pass.toLowerCase();
-      let autorizado = passLower === "admin";
-
-      if (!autorizado) {
-        try {
-          const usuarios = await getUsuariosLocal();
-          autorizado = usuarios.some(
-            (u: any) =>
-              String(u?.rol || "").toLowerCase() === "admin" &&
-              String(u?.clave || "") === pass,
-          );
-        } catch {
-          autorizado = false;
-        }
-      }
-
-      if (!autorizado) {
-        alert("Clave incorrecta.");
-        return;
-      }
+      setMenuUnlockPass("");
+      setMenuUnlockError("");
+      setShowMenuUnlockModal(true);
+      return;
     }
 
     setMenuClosing(false);
@@ -2613,6 +2914,10 @@ export default function PuntoDeVentaView({
   useEffect(() => {
     if (aperturaRegistrada) fetchConteoTurno();
   }, [aperturaRegistrada]);
+
+  useEffect(() => {
+    fetchPiezasPolloDia();
+  }, []);
 
   // Obtener datos de CAI y el número de factura correcto
   // ─ Online  : lee cai_facturas para los meta-datos y llama al RPC ver_factura_actual
@@ -4745,6 +5050,18 @@ export default function PuntoDeVentaView({
             }}
           >
             🥤 {bebidasTurno}
+          </span>
+          <span
+            style={{
+              background: "#b45309",
+              color: "#fff",
+              borderRadius: 12,
+              padding: "2px 10px",
+              fontSize: 12,
+              fontWeight: 700,
+            }}
+          >
+            🍗 {piezasPolloDia}
           </span>
         </div>
       </div>
@@ -11276,7 +11593,7 @@ export default function PuntoDeVentaView({
                     onClick={async () => {
                       closeMenuAnimated();
                       setShowInsumosBebidasDiaModal(true);
-                      await cargarInsumosBebidasDelDia("insumos");
+                      await cargarInsumosBebidasDelDia("insumos", "hoy");
                     }}
                     style={{
                       background: "linear-gradient(135deg, #ecfeff, #cffafe)",
@@ -11289,6 +11606,26 @@ export default function PuntoDeVentaView({
                     <span>
                       <div className="btn-label">Insumos y bebidas del día</div>
                       <div className="btn-desc">Salida inventario + stock</div>
+                    </span>
+                  </button>
+                  <button
+                    className="menu-btn"
+                    onClick={() => {
+                      closeMenuAnimated();
+                      setIngresoPiezasCantidad("");
+                      setShowIngresoPiezasModal(true);
+                    }}
+                    style={{
+                      background: "linear-gradient(135deg, #fff7ed, #ffedd5)",
+                      color: "#9a3412",
+                      border: "1px solid #fdba74",
+                      animationDelay: "415ms",
+                    }}
+                  >
+                    <span className="btn-icon">🍗</span>
+                    <span>
+                      <div className="btn-label">Ingreso de piezas de pollo</div>
+                      <div className="btn-desc">Registrar entrada a inventario</div>
                     </span>
                   </button>
                   <button
@@ -11351,6 +11688,197 @@ export default function PuntoDeVentaView({
         </div>
       )}
 
+      {/* Modal: Desbloqueo de menú */}
+      {showMenuUnlockModal && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            width: "100vw",
+            height: "100vh",
+            background: "rgba(0,0,0,0.55)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 146000,
+          }}
+          onClick={() => setShowMenuUnlockModal(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "#fff",
+              color: "#0f172a",
+              borderRadius: 14,
+              width: "92%",
+              maxWidth: 420,
+              padding: 16,
+            }}
+          >
+            <h3 style={{ margin: "0 0 8px" }}>🔐 Menú bloqueado</h3>
+            <p style={{ margin: "0 0 12px", color: "#64748b", fontSize: 13 }}>
+              Ingrese clave de administrador para abrir el menú.
+            </p>
+            <input
+              type="password"
+              value={menuUnlockPass}
+              onChange={(e) => {
+                setMenuUnlockPass(e.target.value);
+                if (menuUnlockError) setMenuUnlockError("");
+              }}
+              placeholder="Clave de admin"
+              autoFocus
+              onKeyDown={async (e) => {
+                if (e.key !== "Enter") return;
+                const ok = await validarClaveMenu(menuUnlockPass);
+                if (!ok) {
+                  setMenuUnlockError("Clave incorrecta.");
+                  return;
+                }
+                setShowMenuUnlockModal(false);
+                setMenuUnlockPass("");
+                setMenuUnlockError("");
+                setMenuClosing(false);
+                setShowOptionsMenu(true);
+              }}
+              style={{
+                width: "100%",
+                border: "1px solid #cbd5e1",
+                borderRadius: 8,
+                padding: "10px 12px",
+                fontSize: 14,
+                marginBottom: 8,
+              }}
+            />
+            {!!menuUnlockError && (
+              <p style={{ margin: "4px 0 0", color: "#dc2626", fontSize: 12 }}>
+                {menuUnlockError}
+              </p>
+            )}
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 8,
+                marginTop: 12,
+              }}
+            >
+              <button
+                className="inventory-btn secondary"
+                onClick={() => setShowMenuUnlockModal(false)}
+              >
+                Cancelar
+              </button>
+              <button
+                className="inventory-btn primary"
+                onClick={async () => {
+                  const ok = await validarClaveMenu(menuUnlockPass);
+                  if (!ok) {
+                    setMenuUnlockError("Clave incorrecta.");
+                    return;
+                  }
+                  setShowMenuUnlockModal(false);
+                  setMenuUnlockPass("");
+                  setMenuUnlockError("");
+                  setMenuClosing(false);
+                  setShowOptionsMenu(true);
+                }}
+              >
+                Abrir menú
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Ingreso de piezas de pollo */}
+      {showIngresoPiezasModal && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            width: "100vw",
+            height: "100vh",
+            background: "rgba(0,0,0,0.55)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 146000,
+          }}
+          onClick={() => {
+            if (!ingresoPiezasGuardando) setShowIngresoPiezasModal(false);
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "#fff",
+              color: "#0f172a",
+              borderRadius: 14,
+              width: "92%",
+              maxWidth: 420,
+              padding: 16,
+            }}
+          >
+            <h3 style={{ margin: "0 0 8px" }}>🍗 Ingreso de piezas de pollo</h3>
+            <p style={{ margin: "0 0 12px", color: "#64748b", fontSize: 13 }}>
+              Ingresa la cantidad entera a registrar como entrada de inventario.
+            </p>
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={ingresoPiezasCantidad}
+              onChange={(e) => {
+                const onlyDigits = e.target.value.replace(/[^0-9]/g, "");
+                setIngresoPiezasCantidad(onlyDigits);
+              }}
+              placeholder="Cantidad"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !ingresoPiezasGuardando) {
+                  void guardarIngresoPiezasPollo();
+                }
+              }}
+              style={{
+                width: "100%",
+                border: "1px solid #cbd5e1",
+                borderRadius: 8,
+                padding: "10px 12px",
+                fontSize: 16,
+              }}
+            />
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 8,
+                marginTop: 12,
+              }}
+            >
+              <button
+                className="inventory-btn secondary"
+                disabled={ingresoPiezasGuardando}
+                onClick={() => setShowIngresoPiezasModal(false)}
+              >
+                Cancelar
+              </button>
+              <button
+                className="inventory-btn primary"
+                disabled={ingresoPiezasGuardando}
+                onClick={() => {
+                  void guardarIngresoPiezasPollo();
+                }}
+              >
+                {ingresoPiezasGuardando ? "Guardando..." : "Guardar ingreso"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Modal: Insumos y bebidas del día */}
       {showInsumosBebidasDiaModal && (
         <div
@@ -11394,7 +11922,7 @@ export default function PuntoDeVentaView({
                 <p
                   style={{ margin: "4px 0 0", color: "#64748b", fontSize: 12 }}
                 >
-                  Monitoreo diario de salidas de inventario y stock actual
+                  Salidas y stock calculado por rango (Entradas - Salidas)
                 </p>
               </div>
               <button
@@ -11413,9 +11941,43 @@ export default function PuntoDeVentaView({
                 marginBottom: 12,
               }}
             >
+              {([
+                ["hoy", "Hoy"],
+                ["semana", "Semana"],
+                ["mes", "Mes"],
+              ] as const).map(([periodo, label]) => (
+                <button
+                  key={periodo}
+                  className="inventory-btn secondary"
+                  onClick={() =>
+                    cargarInsumosBebidasDelDia(inventarioDiaTipo, periodo)
+                  }
+                  style={{
+                    background:
+                      inventarioDiaPeriodo === periodo ? "#0f172a" : "#f8fafc",
+                    color: inventarioDiaPeriodo === periodo ? "#fff" : "#334155",
+                    border: "1px solid #cbd5e1",
+                    minWidth: 94,
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                flexWrap: "wrap",
+                marginBottom: 12,
+              }}
+            >
               <button
                 className="menu-btn"
-                onClick={() => cargarInsumosBebidasDelDia("insumos")}
+                onClick={() =>
+                  cargarInsumosBebidasDelDia("insumos", inventarioDiaPeriodo)
+                }
                 style={{
                   background:
                     inventarioDiaTipo === "insumos"
@@ -11432,12 +11994,14 @@ export default function PuntoDeVentaView({
                 <span className="btn-icon">🧂</span>
                 <span>
                   <div className="btn-label">Insumos</div>
-                  <div className="btn-desc">Ver consumidos del día</div>
+                  <div className="btn-desc">Ver salidas y stock</div>
                 </span>
               </button>
               <button
                 className="menu-btn"
-                onClick={() => cargarInsumosBebidasDelDia("bebidas")}
+                onClick={() =>
+                  cargarInsumosBebidasDelDia("bebidas", inventarioDiaPeriodo)
+                }
                 style={{
                   background:
                     inventarioDiaTipo === "bebidas"
@@ -11454,7 +12018,34 @@ export default function PuntoDeVentaView({
                 <span className="btn-icon">🥤</span>
                 <span>
                   <div className="btn-label">Bebidas</div>
-                  <div className="btn-desc">Ver salidas del día</div>
+                  <div className="btn-desc">Ver salidas y stock</div>
+                </span>
+              </button>
+              <button
+                className="menu-btn"
+                onClick={() =>
+                  cargarInsumosBebidasDelDia(
+                    "piezas_pollo",
+                    inventarioDiaPeriodo,
+                  )
+                }
+                style={{
+                  background:
+                    inventarioDiaTipo === "piezas_pollo"
+                      ? "linear-gradient(135deg, #ffedd5, #fed7aa)"
+                      : "linear-gradient(135deg, #f8fafc, #f1f5f9)",
+                  color:
+                    inventarioDiaTipo === "piezas_pollo" ? "#9a3412" : "#475569",
+                  border: "1px solid #cbd5e1",
+                  padding: "10px 14px",
+                  flex: 1,
+                  minWidth: 180,
+                }}
+              >
+                <span className="btn-icon">🍗</span>
+                <span>
+                  <div className="btn-label">Piezas de pollo</div>
+                  <div className="btn-desc">Piezas vendidas y stock</div>
                 </span>
               </button>
             </div>
@@ -11480,7 +12071,9 @@ export default function PuntoDeVentaView({
                 <strong>
                   {inventarioDiaTipo === "insumos"
                     ? "🧂 Insumos"
-                    : "🥤 Bebidas"}{" "}
+                    : inventarioDiaTipo === "bebidas"
+                      ? "🥤 Bebidas"
+                      : "🍗 Piezas de pollo"}{" "}
                   · {inventarioDiaFecha || "Hoy"}
                 </strong>
                 <button
@@ -11502,7 +12095,7 @@ export default function PuntoDeVentaView({
                 <div
                   style={{ padding: 22, color: "#64748b", textAlign: "center" }}
                 >
-                  No hay salidas de inventario para esta lista en el día actual.
+                  No hay salidas de inventario para esta lista en este rango.
                 </div>
               ) : (
                 <div style={{ overflowX: "auto" }}>
@@ -11511,7 +12104,7 @@ export default function PuntoDeVentaView({
                       <tr>
                         <th>Nombre</th>
                         <th style={{ textAlign: "right" }}>Vendido</th>
-                        <th style={{ textAlign: "right" }}>Stock</th>
+                        <th style={{ textAlign: "right" }}>Stock (E-S)</th>
                       </tr>
                     </thead>
                     <tbody>

@@ -14,7 +14,7 @@ function getCurrentUser() {
   }
 }
 
-type FiltroTipo = "todos" | "insumo" | "bebida";
+type FiltroTipo = "todos" | "insumo" | "bebida" | "piezas_pollo";
 
 interface FilaInventario {
   id: string;
@@ -28,6 +28,18 @@ interface FilaInventario {
 function numberValue(value: number | string | null | undefined) {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeText(value: unknown) {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function normalizeMovType(value: unknown) {
+  return normalizeText(value).replace(/[\s-]+/g, "_");
 }
 
 export default function EntradasSalidasInventarioView({
@@ -94,7 +106,6 @@ export default function EntradasSalidasInventarioView({
         supabase
           .from("productos")
           .select("id, nombre, tipo")
-          .eq("tipo", "bebida")
           .order("nombre", { ascending: true }),
         movimientosQuery,
       ]);
@@ -111,8 +122,8 @@ export default function EntradasSalidasInventarioView({
       const salidasProducto = new Map<string, number>();
 
       movimientos.forEach((mov) => {
-        const itemTipo = String(mov.item_tipo || "").toLowerCase();
-        const tipo = String(mov.tipo || "").toLowerCase();
+        const itemTipo = normalizeText(mov.item_tipo);
+        const tipo = normalizeMovType(mov.tipo);
         const cantidad = numberValue(mov.cantidad);
         const isEntrada = [
           "entrada",
@@ -179,6 +190,8 @@ export default function EntradasSalidasInventarioView({
 
       const filasBebidas: FilaInventario[] = (bebidasRes.data || []).map(
         (producto: any) => {
+          if (normalizeText(producto.tipo) !== "bebida") return null;
+
           const id = String(producto.id);
           const entradas = numberValue(entradasProducto.get(id));
           const salidas = numberValue(salidasProducto.get(id));
@@ -192,7 +205,7 @@ export default function EntradasSalidasInventarioView({
             stock: entradas - salidas,
           };
         },
-      );
+      ).filter((fila): fila is FilaInventario => Boolean(fila));
 
       setFilas(
         [...filasInsumos, ...filasBebidas].sort((a, b) =>
@@ -212,11 +225,25 @@ export default function EntradasSalidasInventarioView({
   }, []);
 
   const filasFiltradas = useMemo(() => {
+    const normalizeText = (value: string) =>
+      String(value || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .trim();
+
     if (filtroTipo === "insumo") {
       return filas.filter((fila) => fila.tipo === "Insumo");
     }
     if (filtroTipo === "bebida") {
       return filas.filter((fila) => fila.tipo === "Bebida");
+    }
+    if (filtroTipo === "piezas_pollo") {
+      return filas.filter(
+        (fila) =>
+          fila.tipo === "Insumo" &&
+          normalizeText(fila.nombre) === "piezas de pollo",
+      );
     }
     return filas;
   }, [filas, filtroTipo]);
@@ -472,6 +499,7 @@ export default function EntradasSalidasInventarioView({
             <option value="todos">Todos</option>
             <option value="insumo">Insumos</option>
             <option value="bebida">Bebidas</option>
+            <option value="piezas_pollo">Piezas de pollo</option>
           </select>
 
           <label htmlFor="fecha-desde" style={{ fontWeight: 600 }}>
@@ -525,7 +553,15 @@ export default function EntradasSalidasInventarioView({
 
           <button
             onClick={() => {
-              const titulo = `Entradas y Salidas — ${filtroTipo === "insumo" ? "Insumos" : filtroTipo === "bebida" ? "Bebidas" : "Todos"} — ${fechaDesde} al ${fechaHasta}`;
+              const filtroLabel =
+                filtroTipo === "insumo"
+                  ? "Insumos"
+                  : filtroTipo === "bebida"
+                    ? "Bebidas"
+                    : filtroTipo === "piezas_pollo"
+                      ? "Piezas de pollo"
+                      : "Todos";
+              const titulo = `Entradas y Salidas — ${filtroLabel} — ${fechaDesde} al ${fechaHasta}`;
               const filasTR = filasFiltradas.map((f) =>
                 `<tr><td>${f.nombre}</td><td>${f.tipo}</td><td style="text-align:right">${f.entra.toFixed(2)}</td><td style="text-align:right">${f.sale.toFixed(2)}</td><td style="text-align:right">${f.stock.toFixed(2)}</td></tr>`
               ).join("");
@@ -744,7 +780,12 @@ export default function EntradasSalidasInventarioView({
                   📥📤 Entrada/Salida masiva
                 </h3>
                 <p style={{ margin: "4px 0 0", color: "#6b7280" }}>
-                  Mostrando {filtroTipo === "insumo" ? "Insumos" : "Bebidas"}
+                  Mostrando{" "}
+                  {filtroTipo === "insumo"
+                    ? "Insumos"
+                    : filtroTipo === "bebida"
+                      ? "Bebidas"
+                      : "Piezas de pollo"}
                 </p>
               </div>
               <button
