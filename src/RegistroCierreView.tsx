@@ -6,17 +6,16 @@ import {
 } from "./utils/fechas";
 import { useDatosNegocio } from "./useDatosNegocio";
 import {
-  calcularResumenTurno,
   getAperturaActiva,
   upsertOne,
   getAll,
   STORE,
-  getPrecioDolarLocal,
-  sincronizarDiaActual,
 } from "./utils/localDB";
 import {
   limpiarAperturaCache,
   limpiarAperturaLocalStorage,
+  sincronizarAperturaPendiente,
+  sincronizarTodo,
 } from "./utils/offlineSync";
 interface UsuarioActual {
   nombre: string;
@@ -60,6 +59,28 @@ export default function RegistroCierreView({
   const [fechaAperturaSistema, setFechaAperturaSistema] = useState<string>("");
   const [precioDolarActual, setPrecioDolarActual] = useState(0);
 
+  const limpiarValoresSistema = () => {
+    setEfectivoSistema(0);
+    setTarjetaSistema(0);
+    setTransferenciasSistema(0);
+    setDolaresSistema(0);
+    setGastosSistema(0);
+    setTotalVentasSistema(0);
+    setFechaAperturaSistema("");
+  };
+
+  async function obtenerPrecioDolarSupabase() {
+    const { data, error } = await supabase
+      .from("precio_dolar")
+      .select("valor")
+      .eq("id", "singleton")
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw error;
+    return Number(data?.valor) || 0;
+  }
+
   // Cargar valores del sistema al montar la vista
   useEffect(() => {
     let mounted = true;
@@ -68,31 +89,21 @@ export default function RegistroCierreView({
       setLoading(true);
       setSyncError("");
       try {
-        // Primero sincronizar ventas y gastos del día desde Supabase
-        if (navigator.onLine) {
-          setSincronizando(true);
-          try {
-            await sincronizarDiaActual(usuarioActual.id);
-            setUltimaSync(new Date());
-          } catch (syncErr) {
-            console.warn(
-              "[CierreCaja] No se pudo sincronizar con servidor:",
-              syncErr,
-            );
-            setSyncError(
-              "No se pudo conectar al servidor. Los datos pueden ser del caché local.",
-            );
-          } finally {
-            setSincronizando(false);
-          }
-        } else {
-          setSyncError("Sin conexión. Mostrando datos del caché local.");
+        if (!navigator.onLine) {
+          limpiarValoresSistema();
+          setSyncError(
+            "Se requiere conexión para cargar Cierre de Caja (solo Supabase).",
+          );
+          return;
         }
         await obtenerValoresAutomaticos();
-        const tasa = await getPrecioDolarLocal();
+        const tasa = await obtenerPrecioDolarSupabase();
         setPrecioDolarActual(Number(tasa) || 0);
+        setUltimaSync(new Date());
       } catch (err) {
         console.error("Error cargando resumen:", err);
+        limpiarValoresSistema();
+        setSyncError("No se pudieron obtener los datos desde Supabase.");
       } finally {
         if (mounted) setLoading(false);
       }
@@ -103,60 +114,139 @@ export default function RegistroCierreView({
     };
   }, [usuarioActual?.id, caja]);
 
-  // Calcular valores automáticos solo desde IndexedDB
+  // Calcular valores automáticos solo desde Supabase
   async function obtenerValoresAutomaticos() {
-    // 1. Apertura desde IDB/localStorage cache
-    let aperturaActual: any = await getAperturaActiva(usuarioActual?.id ?? "");
+    const resumenVacio = {
+      fondoFijoDia: 0,
+      efectivoDia: 0,
+      tarjetaDia: 0,
+      transferenciasDia: 0,
+      dolaresDia: 0,
+      gastosDia: 0,
+      platillosDia: 0,
+      bebidasDia: 0,
+      totalVentasDia: 0,
+      fechaApertura: "",
+    };
+
+    if (!usuarioActual?.id || !caja) {
+      limpiarValoresSistema();
+      return resumenVacio;
+    }
+
+    const { data: aperturaActual, error: aperturaError } = await supabase
+      .from("cierres")
+      .select(
+        "id,cajero_id,caja,fecha,fecha_apertura,fecha_cierre,estado,fondo_fijo_registrado",
+      )
+      .eq("cajero_id", usuarioActual.id)
+      .eq("caja", caja)
+      .eq("estado", "APERTURA")
+      .order("fecha_apertura", { ascending: false })
+      .order("fecha", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (aperturaError) throw aperturaError;
 
     if (!aperturaActual) {
-      setEfectivoSistema(0);
-      setTarjetaSistema(0);
-      setTransferenciasSistema(0);
-      setDolaresSistema(0);
-      setFechaAperturaSistema("");
-      return {
-        fondoFijoDia: 0,
-        efectivoDia: 0,
-        tarjetaDia: 0,
-        transferenciasDia: 0,
-        dolaresDia: 0,
-        gastosDia: 0,
-        platillosDia: 0,
-        bebidasDia: 0,
-      };
+      limpiarValoresSistema();
+      return resumenVacio;
     }
 
-    const fondoFijoDia = parseFloat(
-      aperturaActual.fondo_fijo_registrado || "0",
+    const fechaInicio = aperturaActual.fecha_apertura ?? aperturaActual.fecha;
+    const fechaFin = aperturaActual.fecha_cierre ?? new Date().toISOString();
+
+    const parseTs = (fechaHora?: string | null, fecha?: string | null) => {
+      const raw =
+        (fechaHora && fechaHora.trim()) ||
+        (fecha && `${fecha}T00:00:00`) ||
+        "";
+      const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+      const ts = Date.parse(normalized);
+      return Number.isFinite(ts) ? ts : 0;
+    };
+
+    const tsInicio = parseTs(fechaInicio, null);
+    const tsFin = parseTs(fechaFin, null);
+
+    const { data: ventasData, error: ventasError } = await supabase
+      .from("ventas")
+      .select(
+        "fecha_hora,tipo,es_donacion,productos,efectivo,tarjeta,transferencia,dolares,dolares_usd,cambio,total,caja",
+      )
+      .eq("cajero_id", usuarioActual.id)
+      .eq("caja", caja)
+      .gte("fecha_hora", fechaInicio)
+      .lte("fecha_hora", fechaFin)
+      .neq("tipo", "CREDITO");
+
+    if (ventasError) throw ventasError;
+
+    const { data: gastosData, error: gastosError } = await supabase
+      .from("gastos")
+      .select("monto,fecha,fecha_hora,caja")
+      .eq("cajero_id", usuarioActual.id)
+      .eq("caja", caja);
+
+    if (gastosError) throw gastosError;
+
+    const ventasTurno = (ventasData || []).filter((venta: any) => {
+      const ts = parseTs(venta.fecha_hora, null);
+      return ts >= tsInicio && ts <= tsFin;
+    });
+
+    const ventasNormales = ventasTurno.filter(
+      (venta: any) => venta.es_donacion !== true,
     );
 
-    // 2. Calcular resumen desde IDB
-    let turnoIDB: any = null;
-    try {
-      if (aperturaActual.id) {
-        turnoIDB = await calcularResumenTurno(
-          Number(aperturaActual.id),
-          usuarioActual?.id ?? "",
-        );
-      }
-    } catch (e) {
-      console.warn("[RegistroCierre] calcularResumenTurno error:", e);
-    }
+    const gastosTurno = (gastosData || []).filter((gasto: any) => {
+      const ts = parseTs(gasto.fecha_hora, gasto.fecha);
+      return ts >= tsInicio && ts <= tsFin;
+    });
 
-    const efectivoDia = parseFloat(turnoIDB?.efectivo_neto ?? 0);
-    const tarjetaDia = parseFloat(turnoIDB?.tarjeta ?? 0);
-    const transferenciasDia = parseFloat(
-      turnoIDB?.transferencia ?? turnoIDB?.transferencia ?? 0,
+    const sumar = (arr: any[], campo: string) =>
+      arr.reduce((acc, row) => acc + parseFloat(row?.[campo] ?? 0), 0);
+
+    const contarTipo = (arr: any[], tipo: string) => {
+      let count = 0;
+      arr.forEach((venta) => {
+        const factor = venta.tipo === "DEVOLUCION" ? -1 : 1;
+        try {
+          const productos =
+            typeof venta.productos === "string"
+              ? JSON.parse(venta.productos)
+              : (venta.productos ?? []);
+          productos.forEach((producto: any) => {
+            if ((producto.tipo ?? "").toLowerCase() === tipo.toLowerCase()) {
+              count += factor * parseInt(producto.cantidad ?? producto.qty ?? 1);
+            }
+          });
+        } catch {
+          // Ignorar ventas con JSON inválido
+        }
+      });
+      return count;
+    };
+
+    const fondoFijoDia = parseFloat(aperturaActual.fondo_fijo_registrado || "0");
+    const efectivoBruto = sumar(ventasNormales as any[], "efectivo");
+    const cambioTotal = sumar(ventasNormales as any[], "cambio");
+    const gastosDia = gastosTurno.reduce(
+      (acc: number, gasto: any) => acc + parseFloat(gasto.monto ?? 0),
+      0,
     );
-    const dolaresDia = parseFloat(turnoIDB?.dolares_usd ?? 0);
-    const gastosDia = parseFloat(turnoIDB?.gastos ?? 0);
-    const platillosDia = parseFloat(
-      turnoIDB?.total_platillos ?? turnoIDB?.platillos_vendidos ?? 0,
+    const efectivoDia = Number((efectivoBruto - cambioTotal - gastosDia).toFixed(2));
+    const tarjetaDia = Number(sumar(ventasNormales as any[], "tarjeta").toFixed(2));
+    const transferenciasDia = Number(
+      sumar(ventasNormales as any[], "transferencia").toFixed(2),
     );
-    const bebidasDia = parseFloat(
-      turnoIDB?.total_bebidas ?? turnoIDB?.bebidas_vendidas ?? 0,
+    const dolaresDia = Number(
+      sumar(ventasNormales as any[], "dolares_usd").toFixed(2),
     );
-    const totalVentasDia = parseFloat(turnoIDB?.total_ventas ?? 0);
+    const totalVentasDia = Number(sumar(ventasNormales as any[], "total").toFixed(2));
+    const platillosDia = contarTipo(ventasNormales as any[], "comida");
+    const bebidasDia = contarTipo(ventasNormales as any[], "bebida");
 
     setEfectivoSistema(efectivoDia);
     setTarjetaSistema(tarjetaDia);
@@ -339,8 +429,9 @@ export default function RegistroCierreView({
       const dolaresRegistrado =
         dolares && parseFloat(dolares) > 0 ? parseFloat(dolares) : 0;
 
-      // Obtener precio del dólar desde IDB (siempre disponible offline)
-      const precioDolar = await getPrecioDolarLocal();
+      // Obtener precio del dólar desde Supabase (fuente oficial)
+      const precioDolar = Number(precioDolarActual) ||
+        (await obtenerPrecioDolarSupabase());
 
       // Calcular diferencia de dólares en Lempiras
       const diferenciaDolaresUSD = dolaresRegistrado - dolaresDia;
@@ -589,70 +680,43 @@ export default function RegistroCierreView({
           );
         }
 
-        // Enviar datos al script de Google (fire-and-forget)
+        // Enviar solo cierre_id al script de Google (fire-and-forget)
         try {
-          const { GOOGLE_SCRIPT_URL } = await import("./googlescript");
-          const gsBase = GOOGLE_SCRIPT_URL;
-          const now = new Date();
-          const fecha = now.toLocaleDateString();
-          const hora = now.toLocaleTimeString();
+          const rawId = registroId;
+          const cierreId =
+            typeof rawId === "number"
+              ? rawId > 0
+                ? String(rawId)
+                : ""
+              : typeof rawId === "string"
+                ? rawId.trim()
+                : "";
 
-          // Determinar correo del admin: preferir correo del usuario tipo Admin en la tabla,
-          // si no existe usar el email del usuarioActual como fallback.
-          let adminEmailToSend = usuarioActual?.email || "";
-          try {
-            const { data: adminUsers, error: adminErr } = await supabase
-              .from("usuarios")
-              .select("email")
-              .eq("rol", "Admin")
-              .limit(1);
-            if (!adminErr && adminUsers && adminUsers.length > 0) {
-              adminEmailToSend = adminUsers[0].email || adminEmailToSend;
-            }
-          } catch (e) {
-            // ignore and fallback
-          }
+          if (cierreId) {
+            const { GOOGLE_SCRIPT_URL } = await import("./googlescript");
+            const url =
+              GOOGLE_SCRIPT_URL +
+              "?" +
+              new URLSearchParams({ cierre_id: cierreId }).toString();
 
-          const params = new URLSearchParams({
-            fecha: fecha,
-            hora: hora,
-            cajero: registro.cajero || "",
-            admin: String(adminEmailToSend || ""),
-            efectivo_reg: String(registro.efectivo_registrado || 0),
-            tarjeta_reg: String(registro.monto_tarjeta_registrado || 0),
-            transf_reg: String(registro.transferencias_registradas || 0),
-            dolares_reg: String(registro.dolares_registrado || 0),
-            efectivo_ventas: String(registro.efectivo_dia || 0),
-            tarjeta_ventas: String(registro.monto_tarjeta_dia || 0),
-            transf_ventas: String(registro.transferencias_dia || 0),
-            dolares_ventas: String(registro.dolares_dia || 0),
-            precio_dolar: String(precioDolar || 0),
-            // Enviar también el total de gastos del día y asegurarnos que
-            // efectivo_ventas corresponde al efectivo ya neto de esos gastos.
-            gasto: String(gastosDia || 0),
-          });
-
-          // Añadir timestamp para evitar caching
-          params.append("_ts", String(Date.now()));
-          const url = gsBase + "?" + params.toString();
-
-          // Método robusto de "fire-and-forget": crear una imagen y asignar src (GET sin CORS)
-          try {
-            const img = new Image();
-            img.src = url;
-            // No necesitamos manejar onload/onerror; esto envía la petición GET inmediatamente.
-          } catch (e) {
-            // fallback a fetch no-cors con keepalive
             try {
-              fetch(url, {
-                method: "GET",
-                mode: "no-cors",
-                keepalive: true,
-              }).catch(() => {});
-            } catch (e2) {
-              // último recurso: fetch normal sin await
-              fetch(url).catch(() => {});
+              const img = new Image();
+              img.src = url;
+            } catch (e) {
+              try {
+                fetch(url, {
+                  method: "GET",
+                  mode: "no-cors",
+                  keepalive: true,
+                }).catch(() => {});
+              } catch (e2) {
+                fetch(url).catch(() => {});
+              }
             }
+          } else {
+            console.warn(
+              "No se envió al Google Script porque cierre_id no es válido.",
+            );
           }
         } catch (e) {
           // No hacemos nada si falla el envío; es fire-and-forget
@@ -894,14 +958,21 @@ export default function RegistroCierreView({
               disabled={sincronizando || loading}
               onClick={async () => {
                 if (!usuarioActual?.id) return;
+                if (!navigator.onLine) {
+                  setSyncError(
+                    "Se requiere conexión para sincronizar y cargar datos del cierre.",
+                  );
+                  return;
+                }
                 setSincronizando(true);
                 setSyncError("");
                 setLoading(true);
                 try {
-                  await sincronizarDiaActual(usuarioActual.id);
+                  await sincronizarAperturaPendiente();
+                  await sincronizarTodo();
                   setUltimaSync(new Date());
                   await obtenerValoresAutomaticos();
-                  const tasa = await getPrecioDolarLocal();
+                  const tasa = await obtenerPrecioDolarSupabase();
                   setPrecioDolarActual(Number(tasa) || 0);
                 } catch (e) {
                   setSyncError("Error al sincronizar.");
