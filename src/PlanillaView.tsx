@@ -30,6 +30,7 @@ export default function PlanillaView({ onBack }: PlanillaViewProps) {
   const [lista, setLista] = useState<PagoPlanilla[]>([]);
   const [loading, setLoading] = useState(false);
   const [showModal, setShowModal] = useState(false);
+  const [detalleItem, setDetalleItem] = useState<PagoPlanilla | null>(null);
   const [editItem, setEditItem] = useState<PagoPlanilla | null>(null);
   const [fechaDesde, setFechaDesde] = useState(() => {
     const hoy = new Date();
@@ -55,11 +56,35 @@ export default function PlanillaView({ onBack }: PlanillaViewProps) {
     setLoading(true);
     try {
       const local = await getAll<PagoPlanilla>(STORE.PLANILLA);
-      const filtrados = local.filter(
+      const localFiltrados = local.filter(
         (p) => p.fecha_pago >= fechaDesde && p.fecha_pago <= fechaHasta,
       );
-      filtrados.sort((a, b) => b.fecha_pago.localeCompare(a.fecha_pago));
-      setLista(filtrados);
+
+      let merged: PagoPlanilla[] = localFiltrados;
+
+      if (navigator.onLine) {
+        const { data, error } = await supabase
+          .from("planilla")
+          .select("*")
+          .gte("fecha_pago", fechaDesde)
+          .lte("fecha_pago", fechaHasta)
+          .order("fecha_pago", { ascending: false });
+
+        if (!error && data) {
+          const remotos = data as PagoPlanilla[];
+          await Promise.all(remotos.map((item) => upsertOne(STORE.PLANILLA, item)));
+
+          const byId = new Map<number, PagoPlanilla>();
+          remotos.forEach((item) => byId.set(Number(item.id), item));
+          localFiltrados.forEach((item) => {
+            if (!byId.has(Number(item.id))) byId.set(Number(item.id), item);
+          });
+          merged = Array.from(byId.values());
+        }
+      }
+
+      merged.sort((a, b) => b.fecha_pago.localeCompare(a.fecha_pago));
+      setLista(merged);
     } catch {
       setLista([]);
     } finally {
@@ -350,73 +375,248 @@ export default function PlanillaView({ onBack }: PlanillaViewProps) {
           Sin pagos de planilla en este período.
         </p>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div
+          style={{
+            border: "1px solid #cbd5e1",
+            borderRadius: 12,
+            background: "#fff",
+          }}
+        >
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns:
+                "90px 150px minmax(0,1fr) 90px 100px 210px",
+              background: "#f8fafc",
+              borderBottom: "1px solid #cbd5e1",
+              fontSize: 12,
+              fontWeight: 800,
+              letterSpacing: 0.4,
+              textTransform: "uppercase",
+              color: "#475569",
+            }}
+          >
+            <div style={{ padding: "10px 12px" }}>Fecha</div>
+            <div style={{ padding: "10px 12px" }}>Empleado</div>
+            <div style={{ padding: "10px 12px" }}>Cargo / Notas</div>
+            <div style={{ padding: "10px 12px" }}>Período</div>
+            <div style={{ padding: "10px 12px", textAlign: "right" }}>Monto</div>
+            <div style={{ padding: "10px 12px", textAlign: "center" }}>
+              Acciones
+            </div>
+          </div>
           {lista.map((p) => (
             <div
               key={p.id}
               style={{
-                background: "#fff",
-                border: "1px solid #e2e8f0",
-                borderRadius: 12,
-                padding: "12px 16px",
-                display: "flex",
-                flexWrap: "wrap",
-                gap: 8,
+                display: "grid",
+                gridTemplateColumns:
+                  "90px 150px minmax(0,1fr) 90px 100px 210px",
+                borderBottom: "1px solid #e2e8f0",
                 alignItems: "center",
+                fontSize: 13,
+                color: "#0f172a",
+                background: "#fff",
               }}
             >
-              <div style={{ flex: 1, minWidth: 180 }}>
-                <div style={{ fontWeight: 700 }}>
-                  {p.empleado}{" "}
-                  {p.cargo ? (
-                    <span
-                      style={{
-                        fontWeight: 400,
-                        color: "#64748b",
-                        fontSize: 13,
-                      }}
-                    >
-                      — {p.cargo}
-                    </span>
-                  ) : null}
-                </div>
-                <div style={{ fontSize: 12, color: "#94a3b8" }}>
-                  {p.fecha_pago} · {p.periodo}
-                  {p.notas ? ` · ${p.notas}` : ""}
-                </div>
+              <div
+                style={{
+                  padding: "10px 8px",
+                  fontVariantNumeric: "tabular-nums",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+                title={p.fecha_pago}
+              >
+                {p.fecha_pago}
               </div>
-              <div style={{ fontWeight: 800, fontSize: 16 }}>
+              <div
+                style={{
+                  padding: "10px 8px",
+                  fontWeight: 700,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+                title={p.empleado}
+              >
+                {p.empleado}
+              </div>
+              <div style={{ padding: "10px 8px", minWidth: 0 }}>
+                <div
+                  style={{
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                  title={p.cargo || "—"}
+                >
+                  {p.cargo || "—"}
+                </div>
+                {p.notas ? (
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: "#64748b",
+                      marginTop: 2,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                    title={p.notas}
+                  >
+                    {p.notas}
+                  </div>
+                ) : null}
+              </div>
+              <div
+                style={{
+                  padding: "10px 8px",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {p.periodo}
+              </div>
+              <div
+                style={{
+                  padding: "10px 8px",
+                  textAlign: "right",
+                  fontWeight: 800,
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
                 {fmtLps(p.monto)}
               </div>
-              <button
-                onClick={() => abrirEditar(p)}
+              <div
                 style={{
-                  padding: "4px 12px",
-                  background: "#f1f5f9",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: 8,
-                  cursor: "pointer",
-                  fontSize: 13,
+                  padding: "8px",
+                  display: "flex",
+                  justifyContent: "center",
+                  gap: 8,
+                  flexWrap: "wrap",
                 }}
               >
-                ✏️
-              </button>
-              <button
-                onClick={() => eliminar(p)}
-                style={{
-                  padding: "4px 12px",
-                  background: "#fef2f2",
-                  border: "1px solid #fecaca",
-                  borderRadius: 8,
-                  cursor: "pointer",
-                  fontSize: 13,
-                  color: "#dc2626",
-                }}
-              >
-                🗑️
-              </button>
+                <button
+                  onClick={() => setDetalleItem(p)}
+                  style={{
+                    padding: "4px 8px",
+                    background: "#eef2ff",
+                    border: "1px solid #c7d2fe",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    color: "#3730a3",
+                  }}
+                >
+                  Ver detalles
+                </button>
+                <button
+                  onClick={() => abrirEditar(p)}
+                  style={{
+                    padding: "4px 8px",
+                    background: "#f1f5f9",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: 700,
+                  }}
+                >
+                  Editar
+                </button>
+                <button
+                  onClick={() => eliminar(p)}
+                  style={{
+                    padding: "4px 8px",
+                    background: "#fef2f2",
+                    border: "1px solid #fecaca",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    fontSize: 12,
+                    color: "#dc2626",
+                    fontWeight: 700,
+                  }}
+                >
+                  Eliminar
+                </button>
+              </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {detalleItem && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 10000,
+            padding: 16,
+          }}
+          onClick={() => setDetalleItem(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: 520,
+              background: "#fff",
+              borderRadius: 14,
+              border: "1px solid #cbd5e1",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                padding: "12px 16px",
+                background: "#f8fafc",
+                borderBottom: "1px solid #e2e8f0",
+                fontWeight: 800,
+                color: "#0f172a",
+              }}
+            >
+              Detalle de pago de planilla
+            </div>
+            <div style={{ padding: 16, display: "grid", gap: 10, fontSize: 14 }}>
+              <div><strong>Fecha de pago:</strong> {detalleItem.fecha_pago}</div>
+              <div><strong>Empleado:</strong> {detalleItem.empleado}</div>
+              <div><strong>Cargo:</strong> {detalleItem.cargo || "—"}</div>
+              <div><strong>Período:</strong> {detalleItem.periodo}</div>
+              <div><strong>Monto:</strong> {fmtLps(detalleItem.monto)}</div>
+              <div><strong>Notas:</strong> {detalleItem.notas || "—"}</div>
+            </div>
+            <div
+              style={{
+                padding: "12px 16px",
+                borderTop: "1px solid #e2e8f0",
+                display: "flex",
+                justifyContent: "flex-end",
+              }}
+            >
+              <button
+                onClick={() => setDetalleItem(null)}
+                style={{
+                  padding: "8px 14px",
+                  background: "#e2e8f0",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: 8,
+                  cursor: "pointer",
+                  fontWeight: 700,
+                }}
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

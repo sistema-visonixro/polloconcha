@@ -30,6 +30,7 @@ export default function ComprasView({ onBack }: ComprasViewProps) {
   const [lista, setLista] = useState<Compra[]>([]);
   const [loading, setLoading] = useState(false);
   const [showModal, setShowModal] = useState(false);
+  const [detalleItem, setDetalleItem] = useState<Compra | null>(null);
   const [editItem, setEditItem] = useState<Compra | null>(null);
   const [fechaDesde, setFechaDesde] = useState(() => {
     const hoy = new Date();
@@ -56,11 +57,35 @@ export default function ComprasView({ onBack }: ComprasViewProps) {
     setLoading(true);
     try {
       const local = await getAll<Compra>(STORE.COMPRAS);
-      const filtradas = local.filter((c) => {
+      const localFiltradas = local.filter((c) => {
         return c.fecha >= fechaDesde && c.fecha <= fechaHasta;
       });
-      filtradas.sort((a, b) => b.fecha.localeCompare(a.fecha));
-      setLista(filtradas);
+
+      let merged: Compra[] = localFiltradas;
+
+      if (navigator.onLine) {
+        const { data, error } = await supabase
+          .from("compras")
+          .select("*")
+          .gte("fecha", fechaDesde)
+          .lte("fecha", fechaHasta)
+          .order("fecha", { ascending: false });
+
+        if (!error && data) {
+          const remotas = data as Compra[];
+          await Promise.all(remotas.map((item) => upsertOne(STORE.COMPRAS, item)));
+
+          const byId = new Map<number, Compra>();
+          remotas.forEach((item) => byId.set(Number(item.id), item));
+          localFiltradas.forEach((item) => {
+            if (!byId.has(Number(item.id))) byId.set(Number(item.id), item);
+          });
+          merged = Array.from(byId.values());
+        }
+      }
+
+      merged.sort((a, b) => b.fecha.localeCompare(a.fecha));
+      setLista(merged);
     } catch {
       setLista([]);
     } finally {
@@ -303,65 +328,250 @@ export default function ComprasView({ onBack }: ComprasViewProps) {
           Sin compras en este período.
         </p>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div
+          style={{
+            border: "1px solid #cbd5e1",
+            borderRadius: 12,
+            background: "#fff",
+          }}
+        >
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns:
+                "90px 120px minmax(0,1fr) 90px 100px 210px",
+              gap: 0,
+              background: "#f8fafc",
+              borderBottom: "1px solid #cbd5e1",
+              fontSize: 12,
+              fontWeight: 800,
+              letterSpacing: 0.4,
+              textTransform: "uppercase",
+              color: "#475569",
+            }}
+          >
+            <div style={{ padding: "10px 12px" }}>Fecha</div>
+            <div style={{ padding: "10px 12px" }}>Proveedor</div>
+            <div style={{ padding: "10px 12px" }}>Descripción / Notas</div>
+            <div style={{ padding: "10px 12px" }}>Método</div>
+            <div style={{ padding: "10px 12px", textAlign: "right" }}>Monto</div>
+            <div style={{ padding: "10px 12px", textAlign: "center" }}>
+              Acciones
+            </div>
+          </div>
           {lista.map((c) => (
             <div
               key={c.id}
               style={{
-                background: "#fff",
-                border: "1px solid #e2e8f0",
-                borderRadius: 12,
-                padding: "12px 16px",
-                display: "flex",
-                flexWrap: "wrap",
-                gap: 8,
+                display: "grid",
+                gridTemplateColumns:
+                  "90px 120px minmax(0,1fr) 90px 100px 210px",
+                borderBottom: "1px solid #e2e8f0",
                 alignItems: "center",
+                fontSize: 13,
+                color: "#0f172a",
+                background: "#fff",
               }}
             >
-              <div style={{ flex: 1, minWidth: 180 }}>
-                <div style={{ fontWeight: 700 }}>{c.descripcion}</div>
-                {c.proveedor && (
-                  <div style={{ fontSize: 12, color: "#64748b" }}>
-                    Proveedor: {c.proveedor}
-                  </div>
-                )}
-                <div style={{ fontSize: 12, color: "#94a3b8" }}>
-                  {c.fecha} · {c.metodo_pago}
-                  {c.notas ? ` · ${c.notas}` : ""}
-                </div>
+              <div
+                style={{
+                  padding: "10px 8px",
+                  fontVariantNumeric: "tabular-nums",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+                title={c.fecha}
+              >
+                {c.fecha}
               </div>
-              <div style={{ fontWeight: 800, fontSize: 16, color: "#1e293b" }}>
+              <div
+                style={{
+                  padding: "10px 8px",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+                title={c.proveedor || "—"}
+              >
+                {c.proveedor || "—"}
+              </div>
+              <div style={{ padding: "10px 8px", minWidth: 0 }}>
+                <div
+                  style={{
+                    fontWeight: 700,
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                  title={c.descripcion}
+                >
+                  {c.descripcion}
+                </div>
+                {c.notas ? (
+                  <div
+                    style={{
+                      fontSize: 12,
+                      color: "#64748b",
+                      marginTop: 2,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                    title={c.notas}
+                  >
+                    {c.notas}
+                  </div>
+                ) : null}
+              </div>
+              <div
+                style={{
+                  padding: "10px 8px",
+                  textTransform: "capitalize",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {c.metodo_pago}
+              </div>
+              <div
+                style={{
+                  padding: "10px 8px",
+                  textAlign: "right",
+                  fontWeight: 800,
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
                 {fmtLps(c.monto)}
               </div>
-              <button
-                onClick={() => abrirEditar(c)}
+              <div
                 style={{
-                  padding: "4px 12px",
-                  background: "#f1f5f9",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: 8,
-                  cursor: "pointer",
-                  fontSize: 13,
+                  padding: "8px",
+                  display: "flex",
+                  justifyContent: "center",
+                  gap: 8,
+                  flexWrap: "wrap",
                 }}
               >
-                ✏️
-              </button>
-              <button
-                onClick={() => eliminar(c)}
-                style={{
-                  padding: "4px 12px",
-                  background: "#fef2f2",
-                  border: "1px solid #fecaca",
-                  borderRadius: 8,
-                  cursor: "pointer",
-                  fontSize: 13,
-                  color: "#dc2626",
-                }}
-              >
-                🗑️
-              </button>
+                <button
+                  onClick={() => setDetalleItem(c)}
+                  style={{
+                    padding: "4px 8px",
+                    background: "#eef2ff",
+                    border: "1px solid #c7d2fe",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    color: "#3730a3",
+                  }}
+                >
+                  Ver detalles
+                </button>
+                <button
+                  onClick={() => abrirEditar(c)}
+                  style={{
+                    padding: "4px 8px",
+                    background: "#f1f5f9",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: 700,
+                  }}
+                >
+                  Editar
+                </button>
+                <button
+                  onClick={() => eliminar(c)}
+                  style={{
+                    padding: "4px 8px",
+                    background: "#fef2f2",
+                    border: "1px solid #fecaca",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    fontSize: 12,
+                    color: "#dc2626",
+                    fontWeight: 700,
+                  }}
+                >
+                  Eliminar
+                </button>
+              </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {detalleItem && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 10000,
+            padding: 16,
+          }}
+          onClick={() => setDetalleItem(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: 520,
+              background: "#fff",
+              borderRadius: 14,
+              border: "1px solid #cbd5e1",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                padding: "12px 16px",
+                background: "#f8fafc",
+                borderBottom: "1px solid #e2e8f0",
+                fontWeight: 800,
+                color: "#0f172a",
+              }}
+            >
+              Detalle de compra
+            </div>
+            <div style={{ padding: 16, display: "grid", gap: 10, fontSize: 14 }}>
+              <div><strong>Fecha:</strong> {detalleItem.fecha}</div>
+              <div><strong>Proveedor:</strong> {detalleItem.proveedor || "—"}</div>
+              <div><strong>Descripción:</strong> {detalleItem.descripcion}</div>
+              <div><strong>Método:</strong> {detalleItem.metodo_pago}</div>
+              <div><strong>Monto:</strong> {fmtLps(detalleItem.monto)}</div>
+              <div><strong>Notas:</strong> {detalleItem.notas || "—"}</div>
+            </div>
+            <div
+              style={{
+                padding: "12px 16px",
+                borderTop: "1px solid #e2e8f0",
+                display: "flex",
+                justifyContent: "flex-end",
+              }}
+            >
+              <button
+                onClick={() => setDetalleItem(null)}
+                style={{
+                  padding: "8px 14px",
+                  background: "#e2e8f0",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: 8,
+                  cursor: "pointer",
+                  fontWeight: 700,
+                }}
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

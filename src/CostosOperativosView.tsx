@@ -49,6 +49,7 @@ export default function CostosOperativosView({
   const [lista, setLista] = useState<CostoOperativo[]>([]);
   const [loading, setLoading] = useState(false);
   const [showModal, setShowModal] = useState(false);
+  const [detalleItem, setDetalleItem] = useState<CostoOperativo | null>(null);
   const [editItem, setEditItem] = useState<CostoOperativo | null>(null);
   const [nuevaCategoria, setNuevaCategoria] = useState("");
   const [fechaDesde, setFechaDesde] = useState(() => {
@@ -74,11 +75,37 @@ export default function CostosOperativosView({
     setLoading(true);
     try {
       const local = await getAll<CostoOperativo>(STORE.COSTOS_OPERATIVOS);
-      const filtrados = local.filter(
+      const localFiltrados = local.filter(
         (c) => c.fecha >= fechaDesde && c.fecha <= fechaHasta,
       );
-      filtrados.sort((a, b) => b.fecha.localeCompare(a.fecha));
-      setLista(filtrados);
+
+      let merged: CostoOperativo[] = localFiltrados;
+
+      if (navigator.onLine) {
+        const { data, error } = await supabase
+          .from("costos_operativos")
+          .select("*")
+          .gte("fecha", fechaDesde)
+          .lte("fecha", fechaHasta)
+          .order("fecha", { ascending: false });
+
+        if (!error && data) {
+          const remotos = data as CostoOperativo[];
+          await Promise.all(
+            remotos.map((item) => upsertOne(STORE.COSTOS_OPERATIVOS, item)),
+          );
+
+          const byId = new Map<number, CostoOperativo>();
+          remotos.forEach((item) => byId.set(Number(item.id), item));
+          localFiltrados.forEach((item) => {
+            if (!byId.has(Number(item.id))) byId.set(Number(item.id), item);
+          });
+          merged = Array.from(byId.values());
+        }
+      }
+
+      merged.sort((a, b) => b.fecha.localeCompare(a.fecha));
+      setLista(merged);
     } catch {
       setLista([]);
     } finally {
@@ -379,76 +406,238 @@ export default function CostosOperativosView({
           Sin costos operativos en este período.
         </p>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div
+          style={{
+            border: "1px solid #cbd5e1",
+            borderRadius: 12,
+            background: "#fff",
+          }}
+        >
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns:
+                "90px 120px minmax(0,1fr) minmax(0,1fr) 100px 210px",
+              background: "#f8fafc",
+              borderBottom: "1px solid #cbd5e1",
+              fontSize: 12,
+              fontWeight: 800,
+              letterSpacing: 0.4,
+              textTransform: "uppercase",
+              color: "#475569",
+            }}
+          >
+            <div style={{ padding: "10px 12px" }}>Fecha</div>
+            <div style={{ padding: "10px 12px" }}>Categoría</div>
+            <div style={{ padding: "10px 12px" }}>Descripción</div>
+            <div style={{ padding: "10px 12px" }}>Notas</div>
+            <div style={{ padding: "10px 12px", textAlign: "right" }}>Monto</div>
+            <div style={{ padding: "10px 12px", textAlign: "center" }}>
+              Acciones
+            </div>
+          </div>
           {lista.map((c) => (
             <div
               key={c.id}
               style={{
-                background: "#fff",
-                borderLeft: `4px solid ${CAT_COLORS[c.categoria] || "#e2e8f0"}`,
-                border: "1px solid #e2e8f0",
-                borderRadius: 12,
-                padding: "12px 16px",
-                display: "flex",
-                flexWrap: "wrap",
-                gap: 8,
+                display: "grid",
+                gridTemplateColumns:
+                  "90px 120px minmax(0,1fr) minmax(0,1fr) 100px 210px",
+                borderBottom: "1px solid #e2e8f0",
                 alignItems: "center",
+                fontSize: 13,
+                color: "#0f172a",
+                background: "#fff",
               }}
             >
-              <div style={{ flex: 1, minWidth: 180 }}>
-                <div style={{ fontWeight: 700 }}>
-                  {c.descripcion}
-                  <span
-                    style={{
-                      marginLeft: 8,
-                      fontSize: 11,
-                      fontWeight: 600,
-                      color: CAT_COLORS[c.categoria] || "#64748b",
-                      background: "#f8fafc",
-                      padding: "2px 7px",
-                      borderRadius: 6,
-                    }}
-                  >
-                    {c.categoria}
-                  </span>
-                </div>
-                <div style={{ fontSize: 12, color: "#94a3b8" }}>
-                  {c.fecha}
-                  {c.notas ? ` · ${c.notas}` : ""}
-                </div>
+              <div
+                style={{
+                  padding: "10px 8px",
+                  fontVariantNumeric: "tabular-nums",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+                title={c.fecha}
+              >
+                {c.fecha}
               </div>
-              <div style={{ fontWeight: 800, fontSize: 16 }}>
+              <div style={{ padding: "10px 8px" }}>
+                <span
+                  style={{
+                    display: "inline-block",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    color: CAT_COLORS[c.categoria] || "#64748b",
+                    background: "#f8fafc",
+                    border: `1px solid ${CAT_COLORS[c.categoria] || "#e2e8f0"}`,
+                    borderRadius: 6,
+                    padding: "2px 8px",
+                  }}
+                >
+                  {c.categoria}
+                </span>
+              </div>
+              <div
+                style={{
+                  padding: "10px 8px",
+                  fontWeight: 700,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+                title={c.descripcion}
+              >
+                {c.descripcion}
+              </div>
+              <div
+                style={{
+                  padding: "10px 8px",
+                  color: "#64748b",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+                title={c.notas || "—"}
+              >
+                {c.notas || "—"}
+              </div>
+              <div
+                style={{
+                  padding: "10px 8px",
+                  textAlign: "right",
+                  fontWeight: 800,
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
                 {fmtLps(c.monto)}
               </div>
-              <button
-                onClick={() => abrirEditar(c)}
+              <div
                 style={{
-                  padding: "4px 12px",
-                  background: "#f1f5f9",
-                  border: "1px solid #e2e8f0",
-                  borderRadius: 8,
-                  cursor: "pointer",
-                  fontSize: 13,
+                  padding: "8px",
+                  display: "flex",
+                  justifyContent: "center",
+                  gap: 8,
+                  flexWrap: "wrap",
                 }}
               >
-                ✏️
-              </button>
-              <button
-                onClick={() => eliminar(c)}
-                style={{
-                  padding: "4px 12px",
-                  background: "#fef2f2",
-                  border: "1px solid #fecaca",
-                  borderRadius: 8,
-                  cursor: "pointer",
-                  fontSize: 13,
-                  color: "#dc2626",
-                }}
-              >
-                🗑️
-              </button>
+                <button
+                  onClick={() => setDetalleItem(c)}
+                  style={{
+                    padding: "4px 8px",
+                    background: "#eef2ff",
+                    border: "1px solid #c7d2fe",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    color: "#3730a3",
+                  }}
+                >
+                  Ver detalles
+                </button>
+                <button
+                  onClick={() => abrirEditar(c)}
+                  style={{
+                    padding: "4px 8px",
+                    background: "#f1f5f9",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: 700,
+                  }}
+                >
+                  Editar
+                </button>
+                <button
+                  onClick={() => eliminar(c)}
+                  style={{
+                    padding: "4px 8px",
+                    background: "#fef2f2",
+                    border: "1px solid #fecaca",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    fontSize: 12,
+                    color: "#dc2626",
+                    fontWeight: 700,
+                  }}
+                >
+                  Eliminar
+                </button>
+              </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {detalleItem && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 10000,
+            padding: 16,
+          }}
+          onClick={() => setDetalleItem(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: 520,
+              background: "#fff",
+              borderRadius: 14,
+              border: "1px solid #cbd5e1",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                padding: "12px 16px",
+                background: "#f8fafc",
+                borderBottom: "1px solid #e2e8f0",
+                fontWeight: 800,
+                color: "#0f172a",
+              }}
+            >
+              Detalle de costo operativo
+            </div>
+            <div style={{ padding: 16, display: "grid", gap: 10, fontSize: 14 }}>
+              <div><strong>Fecha:</strong> {detalleItem.fecha}</div>
+              <div><strong>Categoría:</strong> {detalleItem.categoria}</div>
+              <div><strong>Descripción:</strong> {detalleItem.descripcion}</div>
+              <div><strong>Monto:</strong> {fmtLps(detalleItem.monto)}</div>
+              <div><strong>Notas:</strong> {detalleItem.notas || "—"}</div>
+            </div>
+            <div
+              style={{
+                padding: "12px 16px",
+                borderTop: "1px solid #e2e8f0",
+                display: "flex",
+                justifyContent: "flex-end",
+              }}
+            >
+              <button
+                onClick={() => setDetalleItem(null)}
+                style={{
+                  padding: "8px 14px",
+                  background: "#e2e8f0",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: 8,
+                  cursor: "pointer",
+                  fontWeight: 700,
+                }}
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
