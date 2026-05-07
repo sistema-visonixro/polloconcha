@@ -93,13 +93,17 @@ interface Seleccion {
 }
 
 type InventarioDiaTipo = "insumos" | "bebidas" | "piezas_pollo";
-type InventarioDiaPeriodo = "hoy" | "semana" | "mes";
+type InventarioDiaPeriodo = "hoy" | "semana" | "mes" | "anio";
 
 interface InventarioDiaRow {
   id: string;
   nombre: string;
   vendido: number;
   stock: number;
+  stock_anterior?: number;
+  ingreso_dia?: number;
+  venta_dia?: number;
+  stock_actual?: number;
 }
 
 function obtenerTasaImpuesto(
@@ -227,6 +231,9 @@ export default function PuntoDeVentaView({
   const [showIngresoPiezasModal, setShowIngresoPiezasModal] = useState(false);
   const [ingresoPiezasCantidad, setIngresoPiezasCantidad] = useState("");
   const [ingresoPiezasGuardando, setIngresoPiezasGuardando] = useState(false);
+  const [showMermaPiezasModal, setShowMermaPiezasModal] = useState(false);
+  const [mermaPiezasCantidad, setMermaPiezasCantidad] = useState("");
+  const [mermaPiezasGuardando, setMermaPiezasGuardando] = useState(false);
   // Modal DATOS DE FACTURACIÓN
   const [showDatosFactModal, setShowDatosFactModal] = useState(false);
   const [caiFactData, setCaiFactData] = useState<any>(null);
@@ -1057,12 +1064,6 @@ export default function PuntoDeVentaView({
           .toLowerCase()
           .trim()
           .replace(/[\s-]+/g, "_");
-      const normalizeText = (value: string): string =>
-        String(value || "")
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "")
-          .toLowerCase()
-          .trim();
       const isEntrada = (movType: any): boolean => {
         const t = normalizeMovType(movType);
         return [
@@ -1111,6 +1112,17 @@ export default function PuntoDeVentaView({
           };
         }
 
+        if (selected === "anio") {
+          const firstDayYear = new Date(now.getFullYear(), 0, 1);
+          const start = `${formatDay(firstDayYear)} 00:00:00`;
+          const end = `${formatDay(now)} 23:59:59`;
+          return {
+            start,
+            end,
+            etiqueta: `${formatDay(firstDayYear)} a ${formatDay(now)}`,
+          };
+        }
+
         const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
         const start = `${formatDay(firstDay)} 00:00:00`;
         const end = `${formatDay(now)} 23:59:59`;
@@ -1124,7 +1136,160 @@ export default function PuntoDeVentaView({
       const { start, end, etiqueta } = getRange(periodo);
       const tsStart = Date.parse(start);
       const tsEnd = Date.parse(end);
+      const periodoVista =
+        periodo === "hoy"
+          ? "dia"
+          : periodo === "semana"
+            ? "semana"
+            : periodo === "mes"
+              ? "mes"
+              : "anio";
       setInventarioDiaFecha(etiqueta);
+
+      if (tipo === "piezas_pollo") {
+        const { data: vistaPeriodoData, error: vistaPeriodoError } =
+          await supabase
+            .from("v_piezas_pollo_stock_periodos")
+            .select(
+              "insumo_id,insumo_nombre,stock_anterior,ingreso_periodo,venta_periodo,merma_periodo,stock_actual",
+            )
+            .eq("periodo", periodoVista)
+            .limit(1)
+            .maybeSingle();
+
+        if (!vistaPeriodoError && vistaPeriodoData?.insumo_id) {
+          const stockAnterior = num(vistaPeriodoData.stock_anterior);
+          const ingresoDia = num(vistaPeriodoData.ingreso_periodo);
+          const ventaDia = num(vistaPeriodoData.venta_periodo);
+          const stockActual = num(vistaPeriodoData.stock_actual);
+
+          setInventarioDiaRows([
+            {
+              id: String(vistaPeriodoData.insumo_id),
+              nombre: String(
+                vistaPeriodoData.insumo_nombre || "Piezas de pollo",
+              ),
+              vendido: ventaDia,
+              stock: stockActual,
+              stock_anterior: stockAnterior,
+              ingreso_dia: ingresoDia,
+              venta_dia: ventaDia,
+              stock_actual: stockActual,
+            },
+          ]);
+          return;
+        }
+
+        const { data: piezasData, error: piezasError } = await supabase
+          .from("insumos")
+          .select("id, nombre")
+          .ilike("nombre", "piezas de pollo")
+          .limit(1)
+          .maybeSingle();
+
+        if (piezasError) throw piezasError;
+
+        if (!piezasData?.id) {
+          setInventarioDiaRows([]);
+          return;
+        }
+
+        const piezasId = String(piezasData.id);
+        const { data: movimientosData, error: movimientosError } =
+          await supabase
+            .from("movimientos_inventario")
+            .select("insumo_id,item_tipo,tipo,cantidad,nota,created_at")
+            .eq("item_tipo", "insumo")
+            .eq("insumo_id", piezasId)
+            .order("created_at", { ascending: true });
+
+        if (movimientosError) throw movimientosError;
+
+        const isMerma = (nota: any): boolean =>
+          String(nota || "")
+            .trim()
+            .toUpperCase() === "MERMA";
+
+        const movimientosPiezas = movimientosData || [];
+        const stockAnterior = movimientosPiezas.reduce(
+          (acc: number, m: any) => {
+            const ts = toTs(m.fecha_hora || m.created_at);
+            if (ts >= tsStart) return acc;
+            if (isEntrada(m.tipo)) return acc + num(m.cantidad);
+            if (isSalida(m.tipo)) return acc - num(m.cantidad);
+            return acc;
+          },
+          0,
+        );
+
+        const ingresoDia = movimientosPiezas.reduce((acc: number, m: any) => {
+          const ts = toTs(m.fecha_hora || m.created_at);
+          if (ts < tsStart || ts > tsEnd) return acc;
+          if (isEntrada(m.tipo)) return acc + num(m.cantidad);
+          return acc;
+        }, 0);
+
+        const ventaDia = movimientosPiezas.reduce((acc: number, m: any) => {
+          const ts = toTs(m.fecha_hora || m.created_at);
+          if (ts < tsStart || ts > tsEnd) return acc;
+          if (isSalida(m.tipo) && !isMerma(m.nota))
+            return acc + num(m.cantidad);
+          return acc;
+        }, 0);
+
+        const mermaDia = movimientosPiezas.reduce((acc: number, m: any) => {
+          const ts = toTs(m.fecha_hora || m.created_at);
+          if (ts < tsStart || ts > tsEnd) return acc;
+          if (isSalida(m.tipo) && isMerma(m.nota)) return acc + num(m.cantidad);
+          return acc;
+        }, 0);
+
+        const stockActual = stockAnterior + ingresoDia - ventaDia - mermaDia;
+
+        setInventarioDiaRows([
+          {
+            id: piezasId,
+            nombre: String(piezasData.nombre || "Piezas de pollo"),
+            vendido: ventaDia,
+            stock: stockActual,
+            stock_anterior: stockAnterior,
+            ingreso_dia: ingresoDia,
+            venta_dia: ventaDia,
+            stock_actual: stockActual,
+          },
+        ]);
+        return;
+      }
+
+      if (tipo === "insumos") {
+        const { data: vistaInsumosData, error: vistaInsumosError } =
+          await supabase
+            .from("v_inventario_stock_periodos")
+            .select(
+              "insumo_id,insumo_nombre,venta_periodo,salida_periodo,stock_actual",
+            )
+            .eq("periodo", periodoVista)
+            .order("salida_periodo", { ascending: false });
+
+        if (!vistaInsumosError && Array.isArray(vistaInsumosData)) {
+          const rows: InventarioDiaRow[] = vistaInsumosData
+            .filter((r: any) => num(r?.salida_periodo) > 0)
+            .map((r: any) => ({
+              id: String(r.insumo_id || ""),
+              nombre: String(r.insumo_nombre || "Insumo"),
+              vendido: num(r.venta_periodo),
+              stock: num(r.stock_actual),
+            }))
+            .filter((r) => Boolean(r.id))
+            .sort(
+              (a, b) =>
+                b.vendido - a.vendido || a.nombre.localeCompare(b.nombre),
+            );
+
+          setInventarioDiaRows(rows);
+          return;
+        }
+      }
 
       let movimientosIdb: any[] = [];
       let productosIdb: any[] = [];
@@ -1196,13 +1361,36 @@ export default function PuntoDeVentaView({
           bebidas.map((p: any) => [String(p.id), String(p.nombre || "Bebida")]),
         );
 
+        const stockAnteriorPorId = new Map<string, number>();
+        const ingresosPorId = new Map<string, number>();
         const salidasPorId = new Map<string, number>();
-        const entradasPorId = new Map<string, number>();
-        for (const m of movimientosRango) {
+
+        for (const m of movimientos || []) {
           if (String(m.item_tipo) !== "producto") continue;
           const productoId = String(m.producto_id || "");
           if (!productoId) continue;
           if (!nombrePorId.has(productoId)) continue;
+
+          const ts = toTs(m.fecha_hora || m.created_at);
+          if (!ts) continue;
+
+          if (ts < tsStart) {
+            if (isEntrada(m.tipo)) {
+              stockAnteriorPorId.set(
+                productoId,
+                num(stockAnteriorPorId.get(productoId)) + num(m.cantidad),
+              );
+            } else if (isSalida(m.tipo)) {
+              stockAnteriorPorId.set(
+                productoId,
+                num(stockAnteriorPorId.get(productoId)) - num(m.cantidad),
+              );
+            }
+            continue;
+          }
+
+          if (ts > tsEnd) continue;
+
           if (isSalida(m.tipo)) {
             salidasPorId.set(
               productoId,
@@ -1211,9 +1399,9 @@ export default function PuntoDeVentaView({
             continue;
           }
           if (isEntrada(m.tipo)) {
-            entradasPorId.set(
+            ingresosPorId.set(
               productoId,
-              num(entradasPorId.get(productoId)) + num(m.cantidad),
+              num(ingresosPorId.get(productoId)) + num(m.cantidad),
             );
           }
         }
@@ -1223,7 +1411,14 @@ export default function PuntoDeVentaView({
             id,
             nombre: nombrePorId.get(id) || "Bebida",
             vendido,
-            stock: num(entradasPorId.get(id)) - vendido,
+            stock: num(stockAnteriorPorId.get(id)) + num(ingresosPorId.get(id)) - vendido,
+            stock_anterior: num(stockAnteriorPorId.get(id)),
+            ingreso_dia: num(ingresosPorId.get(id)),
+            venta_dia: vendido,
+            stock_actual:
+              num(stockAnteriorPorId.get(id)) +
+              num(ingresosPorId.get(id)) -
+              vendido,
           }))
           .sort(
             (a, b) => b.vendido - a.vendido || a.nombre.localeCompare(b.nombre),
@@ -1259,28 +1454,6 @@ export default function PuntoDeVentaView({
             num(entradasPorId.get(insumoId)) + num(m.cantidad),
           );
         }
-      }
-
-      if (tipo === "piezas_pollo") {
-        const piezas = (insumos || []).find(
-          (ins: any) => normalizeText(ins.nombre) === "piezas de pollo",
-        );
-
-        if (!piezas) {
-          setInventarioDiaRows([]);
-          return;
-        }
-
-        const id = String(piezas.id);
-        setInventarioDiaRows([
-          {
-            id,
-            nombre: String(piezas.nombre || "Piezas de pollo"),
-            vendido: num(salidasPorId.get(id)),
-            stock: num(entradasPorId.get(id)) - num(salidasPorId.get(id)),
-          },
-        ]);
-        return;
       }
 
       const rows: InventarioDiaRow[] = Array.from(salidasPorId.entries())
@@ -1321,20 +1494,46 @@ export default function PuntoDeVentaView({
         ? "HOY"
         : inventarioDiaPeriodo === "semana"
           ? "SEMANA"
-          : "MES";
+          : inventarioDiaPeriodo === "mes"
+            ? "MES"
+            : "AÑO";
     const titulo = `${baseTitulo} - ${etiquetaPeriodo}`;
     const negocio = datosNegocio?.nombre_negocio || NOMBRE_NEGOCIO;
 
+    const esPiezasPollo = inventarioDiaTipo === "piezas_pollo";
+    const esBebidas = inventarioDiaTipo === "bebidas";
     const filas = inventarioDiaRows
-      .map(
-        (r) => `
+      .map((r) => {
+        if (esPiezasPollo) {
+          return `
+            <tr>
+              <td style="padding:6px 4px;border-bottom:1px dashed #ddd;">${r.nombre}</td>
+              <td style="padding:6px 4px;border-bottom:1px dashed #ddd;text-align:right;">${Number(r.stock_anterior ?? 0).toFixed(2)}</td>
+              <td style="padding:6px 4px;border-bottom:1px dashed #ddd;text-align:right;">${Number(r.ingreso_dia ?? 0).toFixed(2)}</td>
+              <td style="padding:6px 4px;border-bottom:1px dashed #ddd;text-align:right;">${Number(r.venta_dia ?? 0).toFixed(2)}</td>
+              <td style="padding:6px 4px;border-bottom:1px dashed #ddd;text-align:right;">${Number(r.stock_actual ?? r.stock ?? 0).toFixed(2)}</td>
+            </tr>
+          `;
+        }
+        if (esBebidas) {
+          return `
+            <tr>
+              <td style="padding:6px 4px;border-bottom:1px dashed #ddd;">${r.nombre}</td>
+              <td style="padding:6px 4px;border-bottom:1px dashed #ddd;text-align:right;">${Number(r.stock_anterior ?? 0).toFixed(2)}</td>
+              <td style="padding:6px 4px;border-bottom:1px dashed #ddd;text-align:right;">${Number(r.ingreso_dia ?? 0).toFixed(2)}</td>
+              <td style="padding:6px 4px;border-bottom:1px dashed #ddd;text-align:right;">${Number(r.venta_dia ?? r.vendido ?? 0).toFixed(2)}</td>
+              <td style="padding:6px 4px;border-bottom:1px dashed #ddd;text-align:right;">${Number(r.stock_actual ?? r.stock ?? 0).toFixed(2)}</td>
+            </tr>
+          `;
+        }
+        return `
           <tr>
             <td style="padding:6px 4px;border-bottom:1px dashed #ddd;">${r.nombre}</td>
             <td style="padding:6px 4px;border-bottom:1px dashed #ddd;text-align:right;">${r.vendido.toFixed(2)}</td>
             <td style="padding:6px 4px;border-bottom:1px dashed #ddd;text-align:right;">${r.stock.toFixed(2)}</td>
           </tr>
-        `,
-      )
+        `;
+      })
       .join("");
 
     const html = `
@@ -1359,8 +1558,11 @@ export default function PuntoDeVentaView({
             <thead>
               <tr>
                 <th>Nombre</th>
-                <th class="r">Vendido</th>
-                <th class="r">Stock (E-S)</th>
+                ${
+                  esPiezasPollo || esBebidas
+                    ? '<th class="r">Stock ant.</th><th class="r">Ingreso</th><th class="r">Venta</th><th class="r">Stock act.</th>'
+                    : '<th class="r">Vendido</th><th class="r">Stock (E-S)</th>'
+                }
               </tr>
             </thead>
             <tbody>${filas}</tbody>
@@ -2962,6 +3164,116 @@ export default function PuntoDeVentaView({
       alert(e?.message || "No se pudo registrar el ingreso.");
     } finally {
       setIngresoPiezasGuardando(false);
+    }
+  };
+
+  const guardarMermaPiezasPollo = async () => {
+    const cantidad = Number.parseInt(mermaPiezasCantidad.trim(), 10);
+    if (!Number.isFinite(cantidad) || cantidad <= 0) {
+      alert("Ingresa una cantidad entera mayor a 0.");
+      return;
+    }
+
+    setMermaPiezasGuardando(true);
+    try {
+      const normalizeText = (value: string): string =>
+        String(value || "")
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .toLowerCase()
+          .trim();
+
+      let insumos: any[] = [];
+      try {
+        insumos = await getAll<any>(STORE.INSUMOS);
+      } catch {
+        insumos = [];
+      }
+
+      let piezas = insumos.find(
+        (ins: any) => normalizeText(ins.nombre) === "piezas de pollo",
+      );
+
+      if (!piezas) {
+        const { data: insData } = await supabase
+          .from("insumos")
+          .select("id, nombre, stock_actual")
+          .ilike("nombre", "piezas de pollo")
+          .limit(1)
+          .maybeSingle();
+        if (insData) piezas = insData;
+      }
+
+      if (!piezas?.id) {
+        throw new Error("No existe el insumo 'Piezas de pollo'.");
+      }
+
+      const piezasId = String(piezas.id);
+      const { error: movError } = await supabase.rpc(
+        "registrar_movimiento_inventario",
+        {
+          p_item_tipo: "insumo",
+          p_item_id: piezasId,
+          p_tipo_movimiento: "salida",
+          p_cantidad: cantidad,
+          p_costo_unitario: 0,
+          p_referencia_tipo: "manual_pos_merma_piezas_pollo",
+          p_referencia_id: null,
+          p_nota: "MERMA",
+          p_cajero: usuarioActual?.nombre || "Cajero",
+          p_cajero_id: String(usuarioActual?.id || ""),
+          p_modo_estricto: false,
+        },
+      );
+
+      if (movError) throw movError;
+
+      try {
+        const stockActual = Number(piezas.stock_actual || 0);
+        await upsertOne(STORE.INSUMOS, {
+          ...piezas,
+          id: piezasId,
+          stock_actual: Math.max(0, stockActual - cantidad),
+          updated_at: new Date().toISOString(),
+        });
+      } catch {
+        // no-op
+      }
+
+      try {
+        await upsertOne(STORE.MOVIMIENTOS_INVENTARIO, {
+          id: -Date.now(),
+          item_tipo: "insumo",
+          insumo_id: piezasId,
+          tipo: "salida",
+          cantidad,
+          costo_unitario: 0,
+          nota: "MERMA",
+          referencia_tipo: "manual_pos_merma_piezas_pollo",
+          referencia_id: null,
+          cajero: usuarioActual?.nombre || "Cajero",
+          cajero_id: String(usuarioActual?.id || ""),
+          fecha_hora: formatToHondurasLocal(new Date()),
+          created_at: new Date().toISOString(),
+          pending_sync: false,
+        });
+      } catch {
+        // no-op
+      }
+
+      setShowMermaPiezasModal(false);
+      setMermaPiezasCantidad("");
+      await fetchPiezasPolloDia();
+      if (showInsumosBebidasDiaModal) {
+        await cargarInsumosBebidasDelDia(
+          inventarioDiaTipo,
+          inventarioDiaPeriodo,
+        );
+      }
+    } catch (e: any) {
+      alert(e?.message || "No se pudo registrar la merma.");
+    } finally {
+      setMermaPiezasGuardando(false);
     }
   };
 
@@ -11798,6 +12110,26 @@ export default function PuntoDeVentaView({
                   </button>
                   <button
                     className="menu-btn"
+                    onClick={() => {
+                      closeMenuAnimated();
+                      setMermaPiezasCantidad("");
+                      setShowMermaPiezasModal(true);
+                    }}
+                    style={{
+                      background: "linear-gradient(135deg, #fef2f2, #fee2e2)",
+                      color: "#991b1b",
+                      border: "1px solid #fca5a5",
+                      animationDelay: "417ms",
+                    }}
+                  >
+                    <span className="btn-icon">🗑️</span>
+                    <span>
+                      <div className="btn-label">Merma</div>
+                      <div className="btn-desc">Salida de piezas por merma</div>
+                    </span>
+                  </button>
+                  <button
+                    className="menu-btn"
                     onClick={async () => {
                       closeMenuAnimated();
                       setCaiFactLoading(true);
@@ -12049,6 +12381,98 @@ export default function PuntoDeVentaView({
         </div>
       )}
 
+      {/* Modal: Merma de piezas de pollo */}
+      {showMermaPiezasModal && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            width: "100vw",
+            height: "100vh",
+            background: "rgba(0,0,0,0.55)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 146000,
+          }}
+          onClick={() => {
+            if (!mermaPiezasGuardando) setShowMermaPiezasModal(false);
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "#fff",
+              color: "#0f172a",
+              borderRadius: 14,
+              width: "92%",
+              maxWidth: 420,
+              padding: 16,
+            }}
+          >
+            <h3 style={{ margin: "0 0 8px" }}>🗑️ Merma de piezas de pollo</h3>
+            <p style={{ margin: "0 0 12px", color: "#64748b", fontSize: 13 }}>
+              Ingresa la cantidad a descontar del inventario. Se guardará con
+              nota u observación <strong>MERMA</strong>.
+            </p>
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={mermaPiezasCantidad}
+              onChange={(e) => {
+                const onlyDigits = e.target.value.replace(/[^0-9]/g, "");
+                setMermaPiezasCantidad(onlyDigits);
+              }}
+              placeholder="Cantidad"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !mermaPiezasGuardando) {
+                  void guardarMermaPiezasPollo();
+                }
+              }}
+              style={{
+                width: "100%",
+                border: "1px solid #cbd5e1",
+                borderRadius: 8,
+                padding: "10px 12px",
+                fontSize: 16,
+              }}
+            />
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 8,
+                marginTop: 12,
+              }}
+            >
+              <button
+                className="inventory-btn secondary"
+                disabled={mermaPiezasGuardando}
+                onClick={() => setShowMermaPiezasModal(false)}
+              >
+                Cancelar
+              </button>
+              <button
+                className="inventory-btn primary"
+                disabled={mermaPiezasGuardando}
+                onClick={() => {
+                  void guardarMermaPiezasPollo();
+                }}
+                style={{
+                  background: "#b91c1c",
+                  borderColor: "#b91c1c",
+                }}
+              >
+                {mermaPiezasGuardando ? "Guardando..." : "Guardar merma"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Modal: Insumos y bebidas del día */}
       {showInsumosBebidasDiaModal && (
         <div
@@ -12116,6 +12540,7 @@ export default function PuntoDeVentaView({
                   ["hoy", "Hoy"],
                   ["semana", "Semana"],
                   ["mes", "Mes"],
+                  ["anio", "Año"],
                 ] as const
               ).map(([periodo, label]) => (
                 <button
@@ -12273,31 +12698,235 @@ export default function PuntoDeVentaView({
                   No hay salidas de inventario para esta lista en este rango.
                 </div>
               ) : (
-                <div style={{ overflowX: "auto" }}>
-                  <table className="inventory-table">
+                <div>
+                  <table
+                    className="inventory-table"
+                    style={{
+                      width: "100%",
+                      borderCollapse: "collapse",
+                      tableLayout: "fixed",
+                      fontSize: 13,
+                    }}
+                  >
                     <thead>
                       <tr>
-                        <th>Nombre</th>
-                        <th style={{ textAlign: "right" }}>Vendido</th>
-                        <th style={{ textAlign: "right" }}>Stock (E-S)</th>
+                        <th
+                          style={{
+                            border: "1px solid #cbd5e1",
+                            background: "#f8fafc",
+                            padding: "9px 8px",
+                            textAlign: "left",
+                            width:
+                              inventarioDiaTipo === "piezas_pollo" ||
+                              inventarioDiaTipo === "bebidas"
+                                ? "36%"
+                                : "58%",
+                          }}
+                        >
+                          Nombre
+                        </th>
+                        {inventarioDiaTipo === "piezas_pollo" ||
+                        inventarioDiaTipo === "bebidas" ? (
+                          <>
+                            <th
+                              style={{
+                                border: "1px solid #cbd5e1",
+                                background: "#f8fafc",
+                                padding: "9px 8px",
+                                textAlign: "right",
+                                width: "16%",
+                              }}
+                            >
+                              {inventarioDiaPeriodo === "hoy"
+                                ? "Stock al inicio del día"
+                                : inventarioDiaPeriodo === "semana"
+                                  ? "Stock inicio semana"
+                                  : inventarioDiaPeriodo === "mes"
+                                    ? "Stock inicio mes"
+                                    : "Stock inicio año"}
+                            </th>
+                            <th
+                              style={{
+                                border: "1px solid #cbd5e1",
+                                background: "#f8fafc",
+                                padding: "9px 8px",
+                                textAlign: "right",
+                                width: "16%",
+                              }}
+                            >
+                              {inventarioDiaPeriodo === "hoy"
+                                ? "Ingreso del día"
+                                : inventarioDiaPeriodo === "semana"
+                                  ? "Ingreso semana"
+                                  : inventarioDiaPeriodo === "mes"
+                                    ? "Ingreso del mes"
+                                    : "Ingreso del año"}
+                            </th>
+                            <th
+                              style={{
+                                border: "1px solid #cbd5e1",
+                                background: "#f8fafc",
+                                padding: "9px 8px",
+                                textAlign: "right",
+                                width: "16%",
+                              }}
+                            >
+                              {inventarioDiaPeriodo === "hoy"
+                                ? inventarioDiaTipo === "bebidas"
+                                  ? "Salida del día"
+                                  : "Venta del día"
+                                : inventarioDiaPeriodo === "semana"
+                                  ? inventarioDiaTipo === "bebidas"
+                                    ? "Salida semana"
+                                    : "Venta de la semana"
+                                  : inventarioDiaPeriodo === "mes"
+                                    ? inventarioDiaTipo === "bebidas"
+                                      ? "Salida del mes"
+                                      : "Venta del mes"
+                                    : inventarioDiaTipo === "bebidas"
+                                      ? "Salida del año"
+                                      : "Venta del año"}
+                            </th>
+                            <th
+                              style={{
+                                border: "1px solid #cbd5e1",
+                                background: "#f8fafc",
+                                padding: "9px 8px",
+                                textAlign: "right",
+                                width: "16%",
+                              }}
+                            >
+                              Stock actual
+                            </th>
+                          </>
+                        ) : (
+                          <>
+                            <th
+                              style={{
+                                border: "1px solid #cbd5e1",
+                                background: "#f8fafc",
+                                padding: "9px 8px",
+                                textAlign: "right",
+                                width: "21%",
+                              }}
+                            >
+                              {inventarioDiaPeriodo === "hoy"
+                                ? "Vendido hoy"
+                                : inventarioDiaPeriodo === "semana"
+                                  ? "Vendido semana"
+                                  : inventarioDiaPeriodo === "mes"
+                                    ? "Vendido mes"
+                                    : "Vendido año"}
+                            </th>
+                            <th
+                              style={{
+                                border: "1px solid #cbd5e1",
+                                background: "#f8fafc",
+                                padding: "9px 8px",
+                                textAlign: "right",
+                                width: "21%",
+                              }}
+                            >
+                              Stock (E-S)
+                            </th>
+                          </>
+                        )}
                       </tr>
                     </thead>
                     <tbody>
                       {inventarioDiaRows.map((row) => (
                         <tr key={row.id}>
-                          <td>{row.nombre}</td>
                           <td
                             style={{
-                              textAlign: "right",
-                              color: "#dc2626",
-                              fontWeight: 700,
+                              border: "1px solid #e2e8f0",
+                              padding: "8px",
+                              verticalAlign: "top",
                             }}
                           >
-                            {row.vendido.toFixed(2)}
+                            {row.nombre}
                           </td>
-                          <td style={{ textAlign: "right", color: "#0f172a" }}>
-                            {row.stock.toFixed(2)}
-                          </td>
+                          {inventarioDiaTipo === "piezas_pollo" ||
+                          inventarioDiaTipo === "bebidas" ? (
+                            <>
+                              <td
+                                style={{
+                                  border: "1px solid #e2e8f0",
+                                  padding: "8px",
+                                  textAlign: "right",
+                                  color: "#0f172a",
+                                  fontVariantNumeric: "tabular-nums",
+                                }}
+                              >
+                                {Number(row.stock_anterior ?? 0).toFixed(2)}
+                              </td>
+                              <td
+                                style={{
+                                  border: "1px solid #e2e8f0",
+                                  padding: "8px",
+                                  textAlign: "right",
+                                  color: "#166534",
+                                  fontWeight: 700,
+                                  fontVariantNumeric: "tabular-nums",
+                                }}
+                              >
+                                {Number(row.ingreso_dia ?? 0).toFixed(2)}
+                              </td>
+                              <td
+                                style={{
+                                  border: "1px solid #e2e8f0",
+                                  padding: "8px",
+                                  textAlign: "right",
+                                  color: "#dc2626",
+                                  fontWeight: 700,
+                                  fontVariantNumeric: "tabular-nums",
+                                }}
+                              >
+                                {Number(
+                                  row.venta_dia ?? row.vendido ?? 0,
+                                ).toFixed(2)}
+                              </td>
+                              <td
+                                style={{
+                                  border: "1px solid #e2e8f0",
+                                  padding: "8px",
+                                  textAlign: "right",
+                                  color: "#0f172a",
+                                  fontWeight: 700,
+                                  fontVariantNumeric: "tabular-nums",
+                                }}
+                              >
+                                {Number(
+                                  row.stock_actual ?? row.stock ?? 0,
+                                ).toFixed(2)}
+                              </td>
+                            </>
+                          ) : (
+                            <>
+                              <td
+                                style={{
+                                  border: "1px solid #e2e8f0",
+                                  padding: "8px",
+                                  textAlign: "right",
+                                  color: "#dc2626",
+                                  fontWeight: 700,
+                                  fontVariantNumeric: "tabular-nums",
+                                }}
+                              >
+                                {row.vendido.toFixed(2)}
+                              </td>
+                              <td
+                                style={{
+                                  border: "1px solid #e2e8f0",
+                                  padding: "8px",
+                                  textAlign: "right",
+                                  color: "#0f172a",
+                                  fontVariantNumeric: "tabular-nums",
+                                }}
+                              >
+                                {row.stock.toFixed(2)}
+                              </td>
+                            </>
+                          )}
                         </tr>
                       ))}
                     </tbody>

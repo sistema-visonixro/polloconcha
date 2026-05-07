@@ -20,9 +20,10 @@ interface FilaInventario {
   id: string;
   nombre: string;
   tipo: "Insumo" | "Bebida";
-  entra: number;
-  sale: number;
-  stock: number;
+  stockAnterior: number;
+  ingresoPeriodo: number;
+  salidaPeriodo: number;
+  stockActual: number;
 }
 
 function numberValue(value: number | string | null | undefined) {
@@ -52,6 +53,7 @@ export default function EntradasSalidasInventarioView({
   const hoy = new Date().toISOString().split("T")[0];
   const [fechaDesde, setFechaDesde] = useState(hoy);
   const [fechaHasta, setFechaHasta] = useState(hoy);
+  const [busqueda, setBusqueda] = useState("");
   const [filas, setFilas] = useState<FilaInventario[]>([]);
   const [masivoOpen, setMasivoOpen] = useState(false);
   const [masivoTipo, setMasivoTipo] = useState<"entrada" | "salida">("entrada");
@@ -78,18 +80,18 @@ export default function EntradasSalidasInventarioView({
     setError("");
 
     try {
+      const tsDesde = fechaDesde
+        ? Date.parse(`${fechaDesde}T00:00:00`)
+        : Number.NEGATIVE_INFINITY;
+      const tsHasta = fechaHasta
+        ? Date.parse(`${fechaHasta}T23:59:59.999`)
+        : Number.POSITIVE_INFINITY;
+
       let movimientosQuery = supabase
         .from("movimientos_inventario")
         .select(
           "item_tipo, tipo, insumo_id, producto_id, cantidad, created_at",
         );
-
-      if (fechaDesde) {
-        movimientosQuery = movimientosQuery.gte(
-          "created_at",
-          `${fechaDesde}T00:00:00`,
-        );
-      }
 
       if (fechaHasta) {
         movimientosQuery = movimientosQuery.lte(
@@ -116,15 +118,20 @@ export default function EntradasSalidasInventarioView({
 
       const movimientos = movimientosRes.data || [];
 
-      const entradasInsumo = new Map<string, number>();
+      const stockAnteriorInsumo = new Map<string, number>();
+      const ingresosInsumo = new Map<string, number>();
       const salidasInsumo = new Map<string, number>();
-      const entradasProducto = new Map<string, number>();
+      const stockAnteriorProducto = new Map<string, number>();
+      const ingresosProducto = new Map<string, number>();
       const salidasProducto = new Map<string, number>();
 
       movimientos.forEach((mov) => {
         const itemTipo = normalizeText(mov.item_tipo);
         const tipo = normalizeMovType(mov.tipo);
         const cantidad = numberValue(mov.cantidad);
+        const ts = Date.parse(String(mov.created_at || ""));
+        const enRango = Number.isFinite(ts) && ts >= tsDesde && ts <= tsHasta;
+        const antesRango = Number.isFinite(ts) && ts < tsDesde;
         const isEntrada = [
           "entrada",
           "ajuste_positivo",
@@ -141,13 +148,17 @@ export default function EntradasSalidasInventarioView({
 
         if (itemTipo === "insumo" && mov.insumo_id) {
           const id = String(mov.insumo_id);
-          if (isEntrada) {
-            entradasInsumo.set(
+          if (antesRango) {
+            const delta = isEntrada ? cantidad : -cantidad;
+            stockAnteriorInsumo.set(
               id,
-              numberValue(entradasInsumo.get(id)) + cantidad,
+              numberValue(stockAnteriorInsumo.get(id)) + delta,
             );
           }
-          if (isSalida) {
+          if (enRango && isEntrada) {
+            ingresosInsumo.set(id, numberValue(ingresosInsumo.get(id)) + cantidad);
+          }
+          if (enRango && isSalida) {
             salidasInsumo.set(
               id,
               numberValue(salidasInsumo.get(id)) + cantidad,
@@ -157,13 +168,20 @@ export default function EntradasSalidasInventarioView({
 
         if (itemTipo === "producto" && mov.producto_id) {
           const id = String(mov.producto_id);
-          if (isEntrada) {
-            entradasProducto.set(
+          if (antesRango) {
+            const delta = isEntrada ? cantidad : -cantidad;
+            stockAnteriorProducto.set(
               id,
-              numberValue(entradasProducto.get(id)) + cantidad,
+              numberValue(stockAnteriorProducto.get(id)) + delta,
             );
           }
-          if (isSalida) {
+          if (enRango && isEntrada) {
+            ingresosProducto.set(
+              id,
+              numberValue(ingresosProducto.get(id)) + cantidad,
+            );
+          }
+          if (enRango && isSalida) {
             salidasProducto.set(
               id,
               numberValue(salidasProducto.get(id)) + cantidad,
@@ -175,37 +193,41 @@ export default function EntradasSalidasInventarioView({
       const filasInsumos: FilaInventario[] = (insumosRes.data || []).map(
         (insumo: any) => {
           const id = String(insumo.id);
-          const entra = numberValue(entradasInsumo.get(id));
-          const sale = numberValue(salidasInsumo.get(id));
+          const stockAnterior = numberValue(stockAnteriorInsumo.get(id));
+          const ingresoPeriodo = numberValue(ingresosInsumo.get(id));
+          const salidaPeriodo = numberValue(salidasInsumo.get(id));
           return {
             id,
             nombre: String(insumo.nombre || ""),
             tipo: "Insumo",
-            entra,
-            sale,
-            stock: entra - sale,
+            stockAnterior,
+            ingresoPeriodo,
+            salidaPeriodo,
+            stockActual: stockAnterior + ingresoPeriodo - salidaPeriodo,
           };
         },
       );
 
-      const filasBebidas: FilaInventario[] = (bebidasRes.data || []).map(
-        (producto: any) => {
+      const filasBebidas: FilaInventario[] = (bebidasRes.data || [])
+        .map((producto: any) => {
           if (normalizeText(producto.tipo) !== "bebida") return null;
 
           const id = String(producto.id);
-          const entradas = numberValue(entradasProducto.get(id));
-          const salidas = numberValue(salidasProducto.get(id));
+          const stockAnterior = numberValue(stockAnteriorProducto.get(id));
+          const ingresoPeriodo = numberValue(ingresosProducto.get(id));
+          const salidaPeriodo = numberValue(salidasProducto.get(id));
 
           return {
             id,
             nombre: String(producto.nombre || ""),
             tipo: "Bebida",
-            entra: entradas,
-            sale: salidas,
-            stock: entradas - salidas,
+            stockAnterior,
+            ingresoPeriodo,
+            salidaPeriodo,
+            stockActual: stockAnterior + ingresoPeriodo - salidaPeriodo,
           };
-        },
-      ).filter((fila): fila is FilaInventario => Boolean(fila));
+        })
+        .filter((fila): fila is FilaInventario => Boolean(fila));
 
       setFilas(
         [...filasInsumos, ...filasBebidas].sort((a, b) =>
@@ -232,21 +254,25 @@ export default function EntradasSalidasInventarioView({
         .toLowerCase()
         .trim();
 
-    if (filtroTipo === "insumo") {
-      return filas.filter((fila) => fila.tipo === "Insumo");
-    }
-    if (filtroTipo === "bebida") {
-      return filas.filter((fila) => fila.tipo === "Bebida");
-    }
-    if (filtroTipo === "piezas_pollo") {
-      return filas.filter(
-        (fila) =>
-          fila.tipo === "Insumo" &&
-          normalizeText(fila.nombre) === "piezas de pollo",
-      );
-    }
-    return filas;
-  }, [filas, filtroTipo]);
+    const query = normalizeText(busqueda);
+
+    const base =
+      filtroTipo === "insumo"
+        ? filas.filter((fila) => fila.tipo === "Insumo")
+        : filtroTipo === "bebida"
+          ? filas.filter((fila) => fila.tipo === "Bebida")
+          : filtroTipo === "piezas_pollo"
+            ? filas.filter(
+                (fila) =>
+                  fila.tipo === "Insumo" &&
+                  normalizeText(fila.nombre) === "piezas de pollo",
+              )
+            : filas;
+
+    if (!query) return base;
+
+    return base.filter((fila) => normalizeText(fila.nombre).includes(query));
+  }, [filas, filtroTipo, busqueda]);
 
   const abrirMasivo = () => {
     if (filtroTipo === "todos") {
@@ -313,13 +339,13 @@ export default function EntradasSalidasInventarioView({
     setTomaConteos({});
     setTomaExito(false);
     setTomaGuardando(false);
-    // Usar los mismos datos y stock que muestra la tabla principal (Entra - Sale del rango)
+    // Usar los mismos datos y stock que muestra la tabla principal
     setTomaFilas(
       filasFiltradas.map((f) => ({
         id: f.id,
         nombre: f.nombre,
         tipo: f.tipo,
-        stockActual: f.stock,
+        stockActual: f.stockActual,
       })),
     );
     setTomaOpen(true);
@@ -407,11 +433,11 @@ export default function EntradasSalidasInventarioView({
         <button
           onClick={onBack}
           style={{
-            background: "#e5e7eb",
+            background: "#f8fafc",
             color: "#111827",
-            border: "none",
-            borderRadius: 8,
-            padding: "8px 14px",
+            border: "1px solid #cbd5e1",
+            borderRadius: 10,
+            padding: "8px 12px",
             cursor: "pointer",
             fontWeight: 700,
           }}
@@ -468,13 +494,13 @@ export default function EntradasSalidasInventarioView({
               key={label}
               onClick={action}
               style={{
-                background: "#f3f4f6",
+                background: "#f8fafc",
                 color: "#111827",
-                border: "1px solid #d1d5db",
-                borderRadius: 8,
+                border: "1px solid #cbd5e1",
+                borderRadius: 10,
                 padding: "8px 12px",
                 cursor: "pointer",
-                fontWeight: 600,
+                fontWeight: 700,
                 fontSize: 13,
               }}
             >
@@ -501,6 +527,25 @@ export default function EntradasSalidasInventarioView({
             <option value="bebida">Bebidas</option>
             <option value="piezas_pollo">Piezas de pollo</option>
           </select>
+
+          <label htmlFor="busqueda-nombre" style={{ fontWeight: 600 }}>
+            Buscar:
+          </label>
+          <input
+            id="busqueda-nombre"
+            type="text"
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder="Nombre de insumo o bebida"
+            style={{
+              border: "1px solid #d1d5db",
+              borderRadius: 8,
+              padding: "8px 10px",
+              color: "#111827",
+              background: "#fff",
+              minWidth: 220,
+            }}
+          />
 
           <label htmlFor="fecha-desde" style={{ fontWeight: 600 }}>
             Desde:
@@ -539,11 +584,11 @@ export default function EntradasSalidasInventarioView({
           <button
             onClick={cargarDatos}
             style={{
-              background: "#dbeafe",
+              background: "#f8fafc",
               color: "#111827",
-              border: "none",
-              borderRadius: 8,
-              padding: "8px 14px",
+              border: "1px solid #cbd5e1",
+              borderRadius: 10,
+              padding: "8px 12px",
               cursor: "pointer",
               fontWeight: 700,
             }}
@@ -562,19 +607,25 @@ export default function EntradasSalidasInventarioView({
                       ? "Piezas de pollo"
                       : "Todos";
               const titulo = `Entradas y Salidas — ${filtroLabel} — ${fechaDesde} al ${fechaHasta}`;
-              const filasTR = filasFiltradas.map((f) =>
-                `<tr><td>${f.nombre}</td><td>${f.tipo}</td><td style="text-align:right">${f.entra.toFixed(2)}</td><td style="text-align:right">${f.sale.toFixed(2)}</td><td style="text-align:right">${f.stock.toFixed(2)}</td></tr>`
-              ).join("");
-              const html = `<html><head><title>${titulo}</title><style>body{font-family:Arial,sans-serif;font-size:11pt;padding:20px}h2{margin-bottom:8px;font-size:13pt}table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:5px 8px}th{background:#f3f4f6;text-align:left}@media print{button{display:none}}</style></head><body><h2>${titulo}</h2><table><thead><tr><th>Nombre</th><th>Tipo</th><th>Entra</th><th>Sale</th><th>Stock</th></tr></thead><tbody>${filasTR}</tbody></table><script>window.onload=()=>window.print()<\/script></body></html>`;
+              const filasTR = filasFiltradas
+                .map(
+                  (f) =>
+                    `<tr><td>${f.nombre}</td><td>${f.tipo}</td><td style="text-align:right">${f.stockAnterior.toFixed(2)}</td><td style="text-align:right">${f.ingresoPeriodo.toFixed(2)}</td><td style="text-align:right">${f.salidaPeriodo.toFixed(2)}</td><td style="text-align:right">${f.stockActual.toFixed(2)}</td></tr>`,
+                )
+                .join("");
+              const html = `<html><head><title>${titulo}</title><style>body{font-family:Arial,sans-serif;font-size:11pt;padding:20px}h2{margin-bottom:8px;font-size:13pt}table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:5px 8px}th{background:#f3f4f6;text-align:left}@media print{button{display:none}}</style></head><body><h2>${titulo}</h2><table><thead><tr><th>Nombre</th><th>Tipo</th><th>Stock anterior</th><th>Ingreso</th><th>Salida</th><th>Stock actual</th></tr></thead><tbody>${filasTR}</tbody></table><script>window.onload=()=>window.print()<\/script></body></html>`;
               const w = window.open("", "_blank");
-              if (w) { w.document.write(html); w.document.close(); }
+              if (w) {
+                w.document.write(html);
+                w.document.close();
+              }
             }}
             style={{
-              background: "#d1fae5",
+              background: "#f8fafc",
               color: "#111827",
-              border: "none",
-              borderRadius: 8,
-              padding: "8px 14px",
+              border: "1px solid #cbd5e1",
+              borderRadius: 10,
+              padding: "8px 12px",
               cursor: "pointer",
               fontWeight: 700,
             }}
@@ -585,11 +636,11 @@ export default function EntradasSalidasInventarioView({
           <button
             onClick={abrirMasivo}
             style={{
-              background: "#ede9fe",
+              background: "#f8fafc",
               color: "#111827",
-              border: "none",
-              borderRadius: 8,
-              padding: "8px 14px",
+              border: "1px solid #cbd5e1",
+              borderRadius: 10,
+              padding: "8px 12px",
               cursor: "pointer",
               fontWeight: 700,
             }}
@@ -600,11 +651,11 @@ export default function EntradasSalidasInventarioView({
           <button
             onClick={abrirToma}
             style={{
-              background: "#fef3c7",
+              background: "#f8fafc",
               color: "#111827",
-              border: "none",
-              borderRadius: 8,
-              padding: "8px 14px",
+              border: "1px solid #cbd5e1",
+              borderRadius: 10,
+              padding: "8px 12px",
               cursor: "pointer",
               fontWeight: 700,
             }}
@@ -658,7 +709,7 @@ export default function EntradasSalidasInventarioView({
                     border: "1px solid #e5e7eb",
                   }}
                 >
-                  Entra
+                  Stock anterior
                 </th>
                 <th
                   style={{
@@ -667,7 +718,7 @@ export default function EntradasSalidasInventarioView({
                     border: "1px solid #e5e7eb",
                   }}
                 >
-                  Sale
+                  Ingreso
                 </th>
                 <th
                   style={{
@@ -676,7 +727,16 @@ export default function EntradasSalidasInventarioView({
                     border: "1px solid #e5e7eb",
                   }}
                 >
-                  Stock
+                  Salida
+                </th>
+                <th
+                  style={{
+                    textAlign: "right",
+                    padding: 10,
+                    border: "1px solid #e5e7eb",
+                  }}
+                >
+                  Stock actual
                 </th>
               </tr>
             </thead>
@@ -697,7 +757,7 @@ export default function EntradasSalidasInventarioView({
                       fontVariantNumeric: "tabular-nums",
                     }}
                   >
-                    {fila.entra.toFixed(2)}
+                    {fila.stockAnterior.toFixed(2)}
                   </td>
                   <td
                     style={{
@@ -707,7 +767,7 @@ export default function EntradasSalidasInventarioView({
                       fontVariantNumeric: "tabular-nums",
                     }}
                   >
-                    {fila.sale.toFixed(2)}
+                    {fila.ingresoPeriodo.toFixed(2)}
                   </td>
                   <td
                     style={{
@@ -717,7 +777,17 @@ export default function EntradasSalidasInventarioView({
                       fontVariantNumeric: "tabular-nums",
                     }}
                   >
-                    {fila.stock.toFixed(2)}
+                    {fila.salidaPeriodo.toFixed(2)}
+                  </td>
+                  <td
+                    style={{
+                      padding: 10,
+                      border: "1px solid #e5e7eb",
+                      textAlign: "right",
+                      fontVariantNumeric: "tabular-nums",
+                    }}
+                  >
+                    {fila.stockActual.toFixed(2)}
                   </td>
                 </tr>
               ))}
@@ -725,7 +795,7 @@ export default function EntradasSalidasInventarioView({
               {filasFiltradas.length === 0 && (
                 <tr>
                   <td
-                    colSpan={5}
+                    colSpan={6}
                     style={{
                       padding: 16,
                       border: "1px solid #e5e7eb",

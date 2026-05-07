@@ -73,7 +73,9 @@ export default function ComprasView({ onBack }: ComprasViewProps) {
 
         if (!error && data) {
           const remotas = data as Compra[];
-          await Promise.all(remotas.map((item) => upsertOne(STORE.COMPRAS, item)));
+          await Promise.all(
+            remotas.map((item) => upsertOne(STORE.COMPRAS, item)),
+          );
 
           const byId = new Map<number, Compra>();
           remotas.forEach((item) => byId.set(Number(item.id), item));
@@ -338,8 +340,7 @@ export default function ComprasView({ onBack }: ComprasViewProps) {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns:
-                "90px 120px minmax(0,1fr) 90px 100px 210px",
+              gridTemplateColumns: "90px 120px minmax(0,1fr) 90px 100px 210px",
               gap: 0,
               background: "#f8fafc",
               borderBottom: "1px solid #cbd5e1",
@@ -354,7 +355,9 @@ export default function ComprasView({ onBack }: ComprasViewProps) {
             <div style={{ padding: "10px 12px" }}>Proveedor</div>
             <div style={{ padding: "10px 12px" }}>Descripción / Notas</div>
             <div style={{ padding: "10px 12px" }}>Método</div>
-            <div style={{ padding: "10px 12px", textAlign: "right" }}>Monto</div>
+            <div style={{ padding: "10px 12px", textAlign: "right" }}>
+              Monto
+            </div>
             <div style={{ padding: "10px 12px", textAlign: "center" }}>
               Acciones
             </div>
@@ -541,13 +544,27 @@ export default function ComprasView({ onBack }: ComprasViewProps) {
             >
               Detalle de compra
             </div>
-            <div style={{ padding: 16, display: "grid", gap: 10, fontSize: 14 }}>
-              <div><strong>Fecha:</strong> {detalleItem.fecha}</div>
-              <div><strong>Proveedor:</strong> {detalleItem.proveedor || "—"}</div>
-              <div><strong>Descripción:</strong> {detalleItem.descripcion}</div>
-              <div><strong>Método:</strong> {detalleItem.metodo_pago}</div>
-              <div><strong>Monto:</strong> {fmtLps(detalleItem.monto)}</div>
-              <div><strong>Notas:</strong> {detalleItem.notas || "—"}</div>
+            <div
+              style={{ padding: 16, display: "grid", gap: 10, fontSize: 14 }}
+            >
+              <div>
+                <strong>Fecha:</strong> {detalleItem.fecha}
+              </div>
+              <div>
+                <strong>Proveedor:</strong> {detalleItem.proveedor || "—"}
+              </div>
+              <div>
+                <strong>Descripción:</strong> {detalleItem.descripcion}
+              </div>
+              <div>
+                <strong>Método:</strong> {detalleItem.metodo_pago}
+              </div>
+              <div>
+                <strong>Monto:</strong> {fmtLps(detalleItem.monto)}
+              </div>
+              <div>
+                <strong>Notas:</strong> {detalleItem.notas || "—"}
+              </div>
             </div>
             <div
               style={{

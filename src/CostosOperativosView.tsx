@@ -431,7 +431,9 @@ export default function CostosOperativosView({
             <div style={{ padding: "10px 12px" }}>Categoría</div>
             <div style={{ padding: "10px 12px" }}>Descripción</div>
             <div style={{ padding: "10px 12px" }}>Notas</div>
-            <div style={{ padding: "10px 12px", textAlign: "right" }}>Monto</div>
+            <div style={{ padding: "10px 12px", textAlign: "right" }}>
+              Monto
+            </div>
             <div style={{ padding: "10px 12px", textAlign: "center" }}>
               Acciones
             </div>
@@ -608,12 +610,24 @@ export default function CostosOperativosView({
             >
               Detalle de costo operativo
             </div>
-            <div style={{ padding: 16, display: "grid", gap: 10, fontSize: 14 }}>
-              <div><strong>Fecha:</strong> {detalleItem.fecha}</div>
-              <div><strong>Categoría:</strong> {detalleItem.categoria}</div>
-              <div><strong>Descripción:</strong> {detalleItem.descripcion}</div>
-              <div><strong>Monto:</strong> {fmtLps(detalleItem.monto)}</div>
-              <div><strong>Notas:</strong> {detalleItem.notas || "—"}</div>
+            <div
+              style={{ padding: 16, display: "grid", gap: 10, fontSize: 14 }}
+            >
+              <div>
+                <strong>Fecha:</strong> {detalleItem.fecha}
+              </div>
+              <div>
+                <strong>Categoría:</strong> {detalleItem.categoria}
+              </div>
+              <div>
+                <strong>Descripción:</strong> {detalleItem.descripcion}
+              </div>
+              <div>
+                <strong>Monto:</strong> {fmtLps(detalleItem.monto)}
+              </div>
+              <div>
+                <strong>Notas:</strong> {detalleItem.notas || "—"}
+              </div>
             </div>
             <div
               style={{

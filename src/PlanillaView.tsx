@@ -72,7 +72,9 @@ export default function PlanillaView({ onBack }: PlanillaViewProps) {
 
         if (!error && data) {
           const remotos = data as PagoPlanilla[];
-          await Promise.all(remotos.map((item) => upsertOne(STORE.PLANILLA, item)));
+          await Promise.all(
+            remotos.map((item) => upsertOne(STORE.PLANILLA, item)),
+          );
 
           const byId = new Map<number, PagoPlanilla>();
           remotos.forEach((item) => byId.set(Number(item.id), item));
@@ -385,8 +387,7 @@ export default function PlanillaView({ onBack }: PlanillaViewProps) {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns:
-                "90px 150px minmax(0,1fr) 90px 100px 210px",
+              gridTemplateColumns: "90px 150px minmax(0,1fr) 90px 100px 210px",
               background: "#f8fafc",
               borderBottom: "1px solid #cbd5e1",
               fontSize: 12,
@@ -400,7 +401,9 @@ export default function PlanillaView({ onBack }: PlanillaViewProps) {
             <div style={{ padding: "10px 12px" }}>Empleado</div>
             <div style={{ padding: "10px 12px" }}>Cargo / Notas</div>
             <div style={{ padding: "10px 12px" }}>Período</div>
-            <div style={{ padding: "10px 12px", textAlign: "right" }}>Monto</div>
+            <div style={{ padding: "10px 12px", textAlign: "right" }}>
+              Monto
+            </div>
             <div style={{ padding: "10px 12px", textAlign: "center" }}>
               Acciones
             </div>
@@ -586,13 +589,27 @@ export default function PlanillaView({ onBack }: PlanillaViewProps) {
             >
               Detalle de pago de planilla
             </div>
-            <div style={{ padding: 16, display: "grid", gap: 10, fontSize: 14 }}>
-              <div><strong>Fecha de pago:</strong> {detalleItem.fecha_pago}</div>
-              <div><strong>Empleado:</strong> {detalleItem.empleado}</div>
-              <div><strong>Cargo:</strong> {detalleItem.cargo || "—"}</div>
-              <div><strong>Período:</strong> {detalleItem.periodo}</div>
-              <div><strong>Monto:</strong> {fmtLps(detalleItem.monto)}</div>
-              <div><strong>Notas:</strong> {detalleItem.notas || "—"}</div>
+            <div
+              style={{ padding: 16, display: "grid", gap: 10, fontSize: 14 }}
+            >
+              <div>
+                <strong>Fecha de pago:</strong> {detalleItem.fecha_pago}
+              </div>
+              <div>
+                <strong>Empleado:</strong> {detalleItem.empleado}
+              </div>
+              <div>
+                <strong>Cargo:</strong> {detalleItem.cargo || "—"}
+              </div>
+              <div>
+                <strong>Período:</strong> {detalleItem.periodo}
+              </div>
+              <div>
+                <strong>Monto:</strong> {fmtLps(detalleItem.monto)}
+              </div>
+              <div>
+                <strong>Notas:</strong> {detalleItem.notas || "—"}
+              </div>
             </div>
             <div
               style={{

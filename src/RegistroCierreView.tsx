@@ -5,12 +5,7 @@ import {
   compareTurnoRecordsByRecency,
 } from "./utils/fechas";
 import { useDatosNegocio } from "./useDatosNegocio";
-import {
-  getAperturaActiva,
-  upsertOne,
-  getAll,
-  STORE,
-} from "./utils/localDB";
+import { getAperturaActiva, upsertOne, getAll, STORE } from "./utils/localDB";
 import {
   limpiarAperturaCache,
   limpiarAperturaLocalStorage,
@@ -159,9 +154,7 @@ export default function RegistroCierreView({
 
     const parseTs = (fechaHora?: string | null, fecha?: string | null) => {
       const raw =
-        (fechaHora && fechaHora.trim()) ||
-        (fecha && `${fecha}T00:00:00`) ||
-        "";
+        (fechaHora && fechaHora.trim()) || (fecha && `${fecha}T00:00:00`) || "";
       const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
       const ts = Date.parse(normalized);
       return Number.isFinite(ts) ? ts : 0;
@@ -219,7 +212,8 @@ export default function RegistroCierreView({
               : (venta.productos ?? []);
           productos.forEach((producto: any) => {
             if ((producto.tipo ?? "").toLowerCase() === tipo.toLowerCase()) {
-              count += factor * parseInt(producto.cantidad ?? producto.qty ?? 1);
+              count +=
+                factor * parseInt(producto.cantidad ?? producto.qty ?? 1);
             }
           });
         } catch {
@@ -229,22 +223,30 @@ export default function RegistroCierreView({
       return count;
     };
 
-    const fondoFijoDia = parseFloat(aperturaActual.fondo_fijo_registrado || "0");
+    const fondoFijoDia = parseFloat(
+      aperturaActual.fondo_fijo_registrado || "0",
+    );
     const efectivoBruto = sumar(ventasNormales as any[], "efectivo");
     const cambioTotal = sumar(ventasNormales as any[], "cambio");
     const gastosDia = gastosTurno.reduce(
       (acc: number, gasto: any) => acc + parseFloat(gasto.monto ?? 0),
       0,
     );
-    const efectivoDia = Number((efectivoBruto - cambioTotal - gastosDia).toFixed(2));
-    const tarjetaDia = Number(sumar(ventasNormales as any[], "tarjeta").toFixed(2));
+    const efectivoDia = Number(
+      (efectivoBruto - cambioTotal - gastosDia).toFixed(2),
+    );
+    const tarjetaDia = Number(
+      sumar(ventasNormales as any[], "tarjeta").toFixed(2),
+    );
     const transferenciasDia = Number(
       sumar(ventasNormales as any[], "transferencia").toFixed(2),
     );
     const dolaresDia = Number(
       sumar(ventasNormales as any[], "dolares_usd").toFixed(2),
     );
-    const totalVentasDia = Number(sumar(ventasNormales as any[], "total").toFixed(2));
+    const totalVentasDia = Number(
+      sumar(ventasNormales as any[], "total").toFixed(2),
+    );
     const platillosDia = contarTipo(ventasNormales as any[], "comida");
     const bebidasDia = contarTipo(ventasNormales as any[], "bebida");
 
@@ -430,8 +432,8 @@ export default function RegistroCierreView({
         dolares && parseFloat(dolares) > 0 ? parseFloat(dolares) : 0;
 
       // Obtener precio del dólar desde Supabase (fuente oficial)
-      const precioDolar = Number(precioDolarActual) ||
-        (await obtenerPrecioDolarSupabase());
+      const precioDolar =
+        Number(precioDolarActual) || (await obtenerPrecioDolarSupabase());
 
       // Calcular diferencia de dólares en Lempiras
       const diferenciaDolaresUSD = dolaresRegistrado - dolaresDia;
