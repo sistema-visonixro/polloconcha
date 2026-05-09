@@ -150,29 +150,45 @@ export default function RegistroCierreView({
     }
 
     const fechaInicio = aperturaActual.fecha_apertura ?? aperturaActual.fecha;
-    const fechaFin = aperturaActual.fecha_cierre ?? new Date().toISOString();
+    const fechaFin = aperturaActual.fecha_cierre ?? formatToHondurasLocal();
 
     const parseTs = (fechaHora?: string | null, fecha?: string | null) => {
       const raw =
-        (fechaHora && fechaHora.trim()) || (fecha && `${fecha}T00:00:00`) || "";
+        (fechaHora && fechaHora.trim()) || (fecha && `${fecha} 00:00:00`) || "";
+      if (!raw) return 0;
+
+      // Si ya viene ISO con zona, usar parse directo
+      if (/Z$|[+\-]\d{2}:\d{2}$/.test(raw)) {
+        const tsDirect = Date.parse(raw);
+        return Number.isFinite(tsDirect) ? tsDirect : 0;
+      }
+
+      // Formato local Honduras (sin zona) => forzar -06:00
       const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
-      const ts = Date.parse(normalized);
-      return Number.isFinite(ts) ? ts : 0;
+      const tsHonduras = Date.parse(`${normalized}-06:00`);
+      return Number.isFinite(tsHonduras) ? tsHonduras : 0;
     };
 
     const tsInicio = parseTs(fechaInicio, null);
     const tsFin = parseTs(fechaFin, null);
+    const fechaInicioIso =
+      tsInicio > 0 ? new Date(tsInicio).toISOString() : null;
+    const fechaFinIso = tsFin > 0 ? new Date(tsFin).toISOString() : null;
 
-    const { data: ventasData, error: ventasError } = await supabase
+    let ventasQuery = supabase
       .from("ventas")
       .select(
         "fecha_hora,tipo,es_donacion,productos,efectivo,tarjeta,transferencia,dolares,dolares_usd,cambio,total,caja",
       )
       .eq("cajero_id", usuarioActual.id)
       .eq("caja", caja)
-      .gte("fecha_hora", fechaInicio)
-      .lte("fecha_hora", fechaFin)
       .neq("tipo", "CREDITO");
+
+    if (fechaInicioIso)
+      ventasQuery = ventasQuery.gte("fecha_hora", fechaInicioIso);
+    if (fechaFinIso) ventasQuery = ventasQuery.lte("fecha_hora", fechaFinIso);
+
+    const { data: ventasData, error: ventasError } = await ventasQuery;
 
     if (ventasError) throw ventasError;
 
@@ -696,10 +712,17 @@ export default function RegistroCierreView({
 
           if (cierreId) {
             const { GOOGLE_SCRIPT_URL } = await import("./googlescript");
-            const url =
-              GOOGLE_SCRIPT_URL +
-              "?" +
-              new URLSearchParams({ cierre_id: cierreId }).toString();
+            const params = new URLSearchParams({
+              cierre_id: cierreId,
+              total_ventas: String(Number(totalVentasDia || 0).toFixed(2)),
+              fecha_apertura: String(fechaApertura || ""),
+              fecha_cierre: String(
+                registro.fecha_cierre || registro.fecha || "",
+              ),
+              caja: String(caja || ""),
+              cajero_id: String(usuarioActual?.id || ""),
+            });
+            const url = `${GOOGLE_SCRIPT_URL}?${params.toString()}`;
 
             try {
               const img = new Image();

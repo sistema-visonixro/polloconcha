@@ -156,7 +156,10 @@ export default function EntradasSalidasInventarioView({
             );
           }
           if (enRango && isEntrada) {
-            ingresosInsumo.set(id, numberValue(ingresosInsumo.get(id)) + cantidad);
+            ingresosInsumo.set(
+              id,
+              numberValue(ingresosInsumo.get(id)) + cantidad,
+            );
           }
           if (enRango && isSalida) {
             salidasInsumo.set(

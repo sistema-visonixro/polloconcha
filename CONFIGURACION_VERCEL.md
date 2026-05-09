@@ -89,3 +89,50 @@ Para desarrollo local:
 
 - [Documentación de Variables de Entorno en Vercel](https://vercel.com/docs/projects/environment-variables)
 - [Row Level Security en Supabase](https://supabase.com/docs/guides/auth/row-level-security)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+----Error de sintaxis SyntaxError: Invalid regular expression: missing /, línea 1, archivo Código.gs
+
+
+EN 📦 Insumos y bebidas del día
+Salidas y stock calculado por rango (Entradas - Salidas)
+
+EN 
+
+EL BOTON PIEZAS DE POLLO
+
+
+
+QUIERO QUE SE VEA LA LISTA
+
+DE PRODUCTO , CANTIDAD VENDIDA , PIEZAS DE POLLO POR PRODUCTO
+
+SALIDAS POR MERMA
+ABAJO LOS TOTALES 
+
+
+PARA VER LOS DETALLES DE LAS SALIDAS DE VENTAS DE LAS PIEZAS

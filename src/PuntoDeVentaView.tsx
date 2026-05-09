@@ -43,7 +43,6 @@ import {
   getByIndex,
   upsertOne,
   deleteById,
-  calcularResumenTurno,
   getPrecioDolarLocal,
   getUsuariosLocal,
 } from "./utils/localDB";
@@ -104,6 +103,14 @@ interface InventarioDiaRow {
   ingreso_dia?: number;
   venta_dia?: number;
   stock_actual?: number;
+}
+
+interface InventarioDiaPiezasDetalleRow {
+  producto_nombre: string;
+  cantidad_vendida: number;
+  piezas_por_producto: number;
+  piezas_totales_producto: number;
+  merma_periodo: number;
 }
 
 function obtenerTasaImpuesto(
@@ -226,6 +233,8 @@ export default function PuntoDeVentaView({
   const [inventarioDiaRows, setInventarioDiaRows] = useState<
     InventarioDiaRow[]
   >([]);
+  const [inventarioDiaPiezasDetalleRows, setInventarioDiaPiezasDetalleRows] =
+    useState<InventarioDiaPiezasDetalleRow[]>([]);
   const [inventarioDiaFecha, setInventarioDiaFecha] = useState("");
   const [inventarioDiaLoading, setInventarioDiaLoading] = useState(false);
   const [showIngresoPiezasModal, setShowIngresoPiezasModal] = useState(false);
@@ -1059,6 +1068,29 @@ export default function PuntoDeVentaView({
         const n = Number(v);
         return Number.isFinite(n) ? n : 0;
       };
+      const parseHondurasTs = (value: string): number => {
+        const normalized = String(value || "")
+          .trim()
+          .replace(" ", "T");
+        if (!normalized) return 0;
+        const ts = Date.parse(`${normalized}-06:00`);
+        return Number.isFinite(ts) ? ts : 0;
+      };
+      const ymdToUtcDate = (ymd: string): Date => {
+        const [year, month, day] = ymd.split("-").map((part) => Number(part));
+        return new Date(Date.UTC(year, month - 1, day));
+      };
+      const utcDateToYmd = (date: Date): string => {
+        const y = date.getUTCFullYear();
+        const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+        const d = String(date.getUTCDate()).padStart(2, "0");
+        return `${y}-${m}-${d}`;
+      };
+      const addDaysToYmd = (ymd: string, days: number): string => {
+        const date = ymdToUtcDate(ymd);
+        date.setUTCDate(date.getUTCDate() + days);
+        return utcDateToYmd(date);
+      };
       const normalizeMovType = (value: any): string =>
         String(value || "")
           .toLowerCase()
@@ -1083,59 +1115,53 @@ export default function PuntoDeVentaView({
         ].includes(t);
       };
 
-      const formatDay = (date: Date) => {
-        const y = date.getFullYear();
-        const m = String(date.getMonth() + 1).padStart(2, "0");
-        const d = String(date.getDate()).padStart(2, "0");
-        return `${y}-${m}-${d}`;
-      };
-
       const getRange = (selected: InventarioDiaPeriodo) => {
+        const nowHn = formatToHondurasLocal();
+        const todayHn = String(nowHn).slice(0, 10);
+
         if (selected === "hoy") {
-          const { start, end, day } = getLocalDayRange();
-          return { start, end, etiqueta: day };
+          const start = `${todayHn} 00:00:00`;
+          const end = `${todayHn} 23:59:59`;
+          return { start, end, etiqueta: todayHn };
         }
 
-        const now = new Date();
         if (selected === "semana") {
-          const monday = new Date(now);
-          monday.setHours(0, 0, 0, 0);
-          const day = monday.getDay();
+          const day = ymdToUtcDate(todayHn).getUTCDay();
           const diff = day === 0 ? -6 : 1 - day;
-          monday.setDate(monday.getDate() + diff);
-          const start = `${formatDay(monday)} 00:00:00`;
-          const end = `${formatDay(now)} 23:59:59`;
+          const mondayYmd = addDaysToYmd(todayHn, diff);
+          const start = `${mondayYmd} 00:00:00`;
+          const end = `${todayHn} 23:59:59`;
           return {
             start,
             end,
-            etiqueta: `${formatDay(monday)} a ${formatDay(now)}`,
+            etiqueta: `${mondayYmd} a ${todayHn}`,
           };
         }
 
         if (selected === "anio") {
-          const firstDayYear = new Date(now.getFullYear(), 0, 1);
-          const start = `${formatDay(firstDayYear)} 00:00:00`;
-          const end = `${formatDay(now)} 23:59:59`;
+          const firstDayYear = `${todayHn.slice(0, 4)}-01-01`;
+          const start = `${firstDayYear} 00:00:00`;
+          const end = `${todayHn} 23:59:59`;
           return {
             start,
             end,
-            etiqueta: `${formatDay(firstDayYear)} a ${formatDay(now)}`,
+            etiqueta: `${firstDayYear} a ${todayHn}`,
           };
         }
 
-        const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
-        const start = `${formatDay(firstDay)} 00:00:00`;
-        const end = `${formatDay(now)} 23:59:59`;
+        const firstDayMonth = `${todayHn.slice(0, 8)}01`;
+        const start = `${firstDayMonth} 00:00:00`;
+        const end = `${todayHn} 23:59:59`;
         return {
           start,
           end,
-          etiqueta: `${formatDay(firstDay)} a ${formatDay(now)}`,
+          etiqueta: `${firstDayMonth} a ${todayHn}`,
         };
       };
 
       const { start, end, etiqueta } = getRange(periodo);
-      const tsStart = Date.parse(start);
-      const tsEnd = Date.parse(end);
+      const tsStart = parseHondurasTs(start);
+      const tsEnd = parseHondurasTs(end);
       const periodoVista =
         periodo === "hoy"
           ? "dia"
@@ -1145,6 +1171,41 @@ export default function PuntoDeVentaView({
               ? "mes"
               : "anio";
       setInventarioDiaFecha(etiqueta);
+
+      if (tipo !== "piezas_pollo") {
+        setInventarioDiaPiezasDetalleRows([]);
+      }
+
+      const cargarDetallePiezasPorProducto = async () => {
+        const { data: detalleData, error: detalleError } = await supabase
+          .from("v_piezas_pollo_detalle_ventas_periodos")
+          .select(
+            "producto_nombre,cantidad_vendida,piezas_por_producto,piezas_totales_producto,merma_periodo",
+          )
+          .eq("periodo", periodoVista)
+          .order("piezas_totales_producto", { ascending: false });
+
+        if (detalleError) {
+          console.warn(
+            "[InventarioDia] No se pudo cargar detalle de piezas por producto:",
+            detalleError,
+          );
+          setInventarioDiaPiezasDetalleRows([]);
+          return;
+        }
+
+        const detalleRows: InventarioDiaPiezasDetalleRow[] = (
+          detalleData || []
+        ).map((r: any) => ({
+          producto_nombre: String(r?.producto_nombre || "Producto"),
+          cantidad_vendida: num(r?.cantidad_vendida),
+          piezas_por_producto: num(r?.piezas_por_producto),
+          piezas_totales_producto: num(r?.piezas_totales_producto),
+          merma_periodo: num(r?.merma_periodo),
+        }));
+
+        setInventarioDiaPiezasDetalleRows(detalleRows);
+      };
 
       if (tipo === "piezas_pollo") {
         const { data: vistaPeriodoData, error: vistaPeriodoError } =
@@ -1177,6 +1238,7 @@ export default function PuntoDeVentaView({
               stock_actual: stockActual,
             },
           ]);
+          await cargarDetallePiezasPorProducto();
           return;
         }
 
@@ -1258,6 +1320,7 @@ export default function PuntoDeVentaView({
             stock_actual: stockActual,
           },
         ]);
+        await cargarDetallePiezasPorProducto();
         return;
       }
 
@@ -1273,6 +1336,13 @@ export default function PuntoDeVentaView({
 
         if (!vistaInsumosError && Array.isArray(vistaInsumosData)) {
           const rows: InventarioDiaRow[] = vistaInsumosData
+            .filter((r: any) => {
+              const nombre = String(r?.insumo_nombre || "")
+                .trim()
+                .toLowerCase()
+                .replace(/\s+/g, " ");
+              return nombre !== "piezas de pollo";
+            })
             .filter((r: any) => num(r?.salida_periodo) > 0)
             .map((r: any) => ({
               id: String(r.insumo_id || ""),
@@ -1411,7 +1481,10 @@ export default function PuntoDeVentaView({
             id,
             nombre: nombrePorId.get(id) || "Bebida",
             vendido,
-            stock: num(stockAnteriorPorId.get(id)) + num(ingresosPorId.get(id)) - vendido,
+            stock:
+              num(stockAnteriorPorId.get(id)) +
+              num(ingresosPorId.get(id)) -
+              vendido,
             stock_anterior: num(stockAnteriorPorId.get(id)),
             ingreso_dia: num(ingresosPorId.get(id)),
             venta_dia: vendido,
@@ -1471,6 +1544,7 @@ export default function PuntoDeVentaView({
     } catch (err) {
       console.error("[InventarioDia] Error cargando lista:", err);
       setInventarioDiaRows([]);
+      setInventarioDiaPiezasDetalleRows([]);
       alert("No se pudo cargar la lista.");
     } finally {
       setInventarioDiaLoading(false);
@@ -1536,6 +1610,67 @@ export default function PuntoDeVentaView({
       })
       .join("");
 
+    // Tabla de detalle de piezas
+    const filasDetalle = esPiezasPollo
+      ? inventarioDiaPiezasDetalleRows
+          .map((r) => `
+            <tr>
+              <td style="padding:6px 4px;border-bottom:1px dashed #ddd;">${r.producto_nombre || "Producto"}</td>
+              <td style="padding:6px 4px;border-bottom:1px dashed #ddd;text-align:right;">${r.cantidad_vendida?.toFixed(2) || "0.00"}</td>
+              <td style="padding:6px 4px;border-bottom:1px dashed #ddd;text-align:right;">${r.piezas_por_producto?.toFixed(2) || "0.00"}</td>
+              <td style="padding:6px 4px;border-bottom:1px dashed #ddd;text-align:right;">${r.piezas_totales_producto?.toFixed(2) || "0.00"}</td>
+            </tr>
+          `)
+          .join("")
+      : "";
+
+    // Calcular totales para piezas
+    let totalCantidadVendidaPiezas = 0;
+    let totalPiezasVendidas = 0;
+    let totalMermaPiezas = 0;
+    if (esPiezasPollo) {
+      inventarioDiaPiezasDetalleRows.forEach((r) => {
+        totalCantidadVendidaPiezas += r.cantidad_vendida || 0;
+        totalPiezasVendidas += r.piezas_totales_producto || 0;
+      });
+      totalMermaPiezas = inventarioDiaPiezasDetalleRows.length
+        ? Number(inventarioDiaPiezasDetalleRows[0].merma_periodo || 0)
+        : 0;
+    }
+
+    const detalleSection = esPiezasPollo
+      ? `
+        <div style="margin-top:12px; padding-top:8px; border-top:1px solid #000;">
+          <div style="font-weight:700;font-size:11px;margin-bottom:6px;">Detalle de salidas por ventas de piezas</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Producto</th>
+                <th class="r">Cant. vendida</th>
+                <th class="r">Piezas / prod.</th>
+                <th class="r">Piezas totales</th>
+              </tr>
+            </thead>
+            <tbody>${filasDetalle}</tbody>
+          </table>
+          <div style="margin-top:6px;font-size:10px;border-top:1px dashed #ddd;padding-top:4px;">
+            <div style="display:flex;justify-content:space-between;">
+              <span>Total cantidad vendida</span>
+              <span style="font-weight:700;">${totalCantidadVendidaPiezas.toFixed(2)}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-top:2px;">
+              <span>Total piezas de pollo</span>
+              <span style="font-weight:700;">${totalPiezasVendidas.toFixed(2)}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;margin-top:2px;">
+              <span>Salidas por merma</span>
+              <span style="font-weight:700;">${totalMermaPiezas.toFixed(2)}</span>
+            </div>
+          </div>
+        </div>
+      `
+      : "";
+
     const html = `
       <html>
         <head>
@@ -1567,6 +1702,7 @@ export default function PuntoDeVentaView({
             </thead>
             <tbody>${filas}</tbody>
           </table>
+          ${detalleSection}
           <div class="f">Registros: ${inventarioDiaRows.length}</div>
         </body>
       </html>
@@ -2865,7 +3001,7 @@ export default function PuntoDeVentaView({
 
   // Estados conteo del turno (chips del header)
   const [platillosTurno, setPlatillosTurno] = useState(0);
-  const [bebidasTurno, setBebidasTurno] = useState(0);
+  const [bebidasDia, setBebidasDia] = useState(0);
   const [piezasPolloDia, setPiezasPolloDia] = useState(0);
 
   // Estados para control de apertura
@@ -2925,114 +3061,88 @@ export default function PuntoDeVentaView({
       }
 
       if (aperturaIDB) {
-        const resumenIDB = await calcularResumenTurno(
-          Number(aperturaIDB.id),
-          usuarioActual.id,
-        );
-
-        if (resumenIDB) {
-          setPlatillosTurno(Math.max(0, resumenIDB.total_platillos || 0));
-          setBebidasTurno(Math.max(0, resumenIDB.total_bebidas || 0));
-          await fetchPiezasPolloDia();
-          return;
-        }
+        await fetchPiezasPolloDia();
+        await fetchBebidasDia();
+        return;
       }
 
       setPlatillosTurno(0);
-      setBebidasTurno(0);
+      setBebidasDia(0);
       await fetchPiezasPolloDia();
+      await fetchBebidasDia();
     } catch (_) {
+      setPlatillosTurno(0);
       setPiezasPolloDia(0);
     }
   };
 
   const fetchPiezasPolloDia = async () => {
     try {
-      const normalizeText = (value: string): string =>
-        String(value || "")
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "")
-          .toLowerCase()
-          .trim();
       const num = (value: any): number => {
         const parsed = Number(value);
         return Number.isFinite(parsed) ? parsed : 0;
       };
-      const toTs = (value: any): number => {
-        if (!value) return 0;
-        if (typeof value === "number") return value;
-        const raw = String(value).trim();
-        const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
-        const ts = Date.parse(normalized);
-        return Number.isFinite(ts) ? ts : 0;
-      };
-      const isSalida = (movType: any): boolean => {
-        const t = String(movType || "")
-          .toLowerCase()
-          .trim();
-        return !(
-          t === "entrada" ||
-          t === "compra" ||
-          t === "ajuste_positivo" ||
-          t === "produccion_entrada"
+      const { data: detalleDia, error: detalleError } = await supabase
+        .from("v_piezas_pollo_detalle_ventas_periodos")
+        .select(
+          "total_piezas_vendidas_periodo,total_cantidad_vendida_periodo",
+        )
+        .eq("periodo", "dia")
+        .limit(1)
+        .maybeSingle();
+
+      if (!detalleError && detalleDia) {
+        setPlatillosTurno(
+          Math.max(0, num(detalleDia.total_cantidad_vendida_periodo)),
         );
-      };
-
-      let insumos: any[] = [];
-      let movimientos: any[] = [];
-
-      try {
-        insumos = await getAll<any>(STORE.INSUMOS);
-        movimientos = await getAll<any>(STORE.MOVIMIENTOS_INVENTARIO);
-      } catch {
-        insumos = [];
-        movimientos = [];
-      }
-
-      if (insumos.length === 0) {
-        const { data } = await supabase.from("insumos").select("id, nombre");
-        if (data?.length) insumos = data;
-      }
-
-      const piezas = insumos.find(
-        (ins: any) => normalizeText(ins.nombre) === "piezas de pollo",
-      );
-
-      if (!piezas) {
-        setPiezasPolloDia(0);
+        setPiezasPolloDia(
+          Math.max(0, num(detalleDia.total_piezas_vendidas_periodo)),
+        );
         return;
       }
 
-      const piezasId = String(piezas.id);
-      const { start, end } = getLocalDayRange();
-      const tsStart = Date.parse(start);
-      const tsEnd = Date.parse(end);
+      const { data: stockDia, error: stockError } = await supabase
+        .from("v_piezas_pollo_stock_periodos")
+        .select("venta_periodo,cantidad_productos_vendidos")
+        .eq("periodo", "dia")
+        .limit(1)
+        .maybeSingle();
 
-      if (movimientos.length === 0) {
-        const { data } = await supabase
-          .from("movimientos_inventario")
-          .select(
-            "insumo_id, item_tipo, tipo, cantidad, fecha_hora, created_at",
-          )
-          .eq("item_tipo", "insumo")
-          .eq("insumo_id", piezasId)
-          .gte("created_at", start)
-          .lte("created_at", end);
-        if (data?.length) movimientos = data;
+      if (!stockError && stockDia) {
+        setPlatillosTurno(Math.max(0, num(stockDia.cantidad_productos_vendidos)));
+        setPiezasPolloDia(Math.max(0, num(stockDia.venta_periodo)));
+        return;
       }
 
-      const vendidoDia = (movimientos || []).reduce((acc: number, m: any) => {
-        if (String(m.item_tipo) !== "insumo") return acc;
-        if (String(m.insumo_id || "") !== piezasId) return acc;
-        if (!isSalida(m.tipo)) return acc;
-        const ts = toTs(m.fecha_hora || m.created_at);
-        if (ts < tsStart || ts > tsEnd) return acc;
-        return acc + num(m.cantidad);
-      }, 0);
-
-      setPiezasPolloDia(Math.max(0, vendidoDia));
-    } catch {
+      setPlatillosTurno(0);
       setPiezasPolloDia(0);
+    } catch {
+      setPlatillosTurno(0);
+      setPiezasPolloDia(0);
+    }
+  };
+
+  const fetchBebidasDia = async () => {
+    try {
+      const num = (value: any): number => {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+      const { data: bebidas, error } = await supabase
+        .from("v_bebidas_ventas_periodos")
+        .select("total_bebidas_vendidas")
+        .eq("periodo", "dia")
+        .limit(1)
+        .maybeSingle();
+
+      if (!error && bebidas) {
+        setBebidasDia(Math.max(0, num(bebidas.total_bebidas_vendidas)));
+        return;
+      }
+
+      setBebidasDia(0);
+    } catch {
+      setBebidasDia(0);
     }
   };
 
@@ -3154,6 +3264,7 @@ export default function PuntoDeVentaView({
       setShowIngresoPiezasModal(false);
       setIngresoPiezasCantidad("");
       await fetchPiezasPolloDia();
+      await fetchBebidasDia();
       if (showInsumosBebidasDiaModal) {
         await cargarInsumosBebidasDelDia(
           inventarioDiaTipo,
@@ -3264,6 +3375,7 @@ export default function PuntoDeVentaView({
       setShowMermaPiezasModal(false);
       setMermaPiezasCantidad("");
       await fetchPiezasPolloDia();
+      await fetchBebidasDia();
       if (showInsumosBebidasDiaModal) {
         await cargarInsumosBebidasDelDia(
           inventarioDiaTipo,
@@ -3295,6 +3407,7 @@ export default function PuntoDeVentaView({
 
   useEffect(() => {
     fetchPiezasPolloDia();
+    fetchBebidasDia();
   }, []);
 
   // Obtener datos de CAI y el número de factura correcto
@@ -5427,7 +5540,7 @@ export default function PuntoDeVentaView({
               fontWeight: 700,
             }}
           >
-            🥤 {bebidasTurno}
+            🥤 {bebidasDia}
           </span>
           <span
             style={{
@@ -12474,469 +12587,731 @@ export default function PuntoDeVentaView({
       )}
 
       {/* Modal: Insumos y bebidas del día */}
-      {showInsumosBebidasDiaModal && (
-        <div
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            width: "100vw",
-            height: "100vh",
-            background: "rgba(0,0,0,0.5)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 145000,
-          }}
-          onClick={() => setShowInsumosBebidasDiaModal(false)}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              background: "#fff",
-              color: "#0f172a",
-              borderRadius: 14,
-              width: "92%",
-              maxWidth: 760,
-              maxHeight: "88vh",
-              overflow: "auto",
-              padding: 16,
-            }}
-          >
+      {showInsumosBebidasDiaModal &&
+        (() => {
+          const totalCantidadVendidaPiezas =
+            inventarioDiaPiezasDetalleRows.reduce(
+              (acc, row) => acc + Number(row.cantidad_vendida || 0),
+              0,
+            );
+          const totalPiezasVendidas = inventarioDiaPiezasDetalleRows.reduce(
+            (acc, row) => acc + Number(row.piezas_totales_producto || 0),
+            0,
+          );
+          const totalMermaPiezas = inventarioDiaPiezasDetalleRows.length
+            ? Number(inventarioDiaPiezasDetalleRows[0].merma_periodo || 0)
+            : 0;
+
+          return (
             <div
               style={{
+                position: "fixed",
+                top: 0,
+                left: 0,
+                width: "100vw",
+                height: "100vh",
+                background: "rgba(0,0,0,0.5)",
                 display: "flex",
-                justifyContent: "space-between",
                 alignItems: "center",
-                marginBottom: 12,
+                justifyContent: "center",
+                zIndex: 145000,
               }}
-            >
-              <div>
-                <h3 style={{ margin: 0 }}>📦 Insumos y bebidas del día</h3>
-                <p
-                  style={{ margin: "4px 0 0", color: "#64748b", fontSize: 12 }}
-                >
-                  Salidas y stock calculado por rango (Entradas - Salidas)
-                </p>
-              </div>
-              <button
-                className="inventory-btn secondary"
-                onClick={() => setShowInsumosBebidasDiaModal(false)}
-              >
-                ✕
-              </button>
-            </div>
-
-            <div
-              style={{
-                display: "flex",
-                gap: 8,
-                flexWrap: "wrap",
-                marginBottom: 12,
-              }}
-            >
-              {(
-                [
-                  ["hoy", "Hoy"],
-                  ["semana", "Semana"],
-                  ["mes", "Mes"],
-                  ["anio", "Año"],
-                ] as const
-              ).map(([periodo, label]) => (
-                <button
-                  key={periodo}
-                  className="inventory-btn secondary"
-                  onClick={() =>
-                    cargarInsumosBebidasDelDia(inventarioDiaTipo, periodo)
-                  }
-                  style={{
-                    background:
-                      inventarioDiaPeriodo === periodo ? "#0f172a" : "#f8fafc",
-                    color:
-                      inventarioDiaPeriodo === periodo ? "#fff" : "#334155",
-                    border: "1px solid #cbd5e1",
-                    minWidth: 94,
-                  }}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            <div
-              style={{
-                display: "flex",
-                gap: 8,
-                flexWrap: "wrap",
-                marginBottom: 12,
-              }}
-            >
-              <button
-                className="menu-btn"
-                onClick={() =>
-                  cargarInsumosBebidasDelDia("insumos", inventarioDiaPeriodo)
-                }
-                style={{
-                  background:
-                    inventarioDiaTipo === "insumos"
-                      ? "linear-gradient(135deg, #dcfce7, #bbf7d0)"
-                      : "linear-gradient(135deg, #f8fafc, #f1f5f9)",
-                  color:
-                    inventarioDiaTipo === "insumos" ? "#166534" : "#475569",
-                  border: "1px solid #cbd5e1",
-                  padding: "10px 14px",
-                  flex: 1,
-                  minWidth: 180,
-                }}
-              >
-                <span className="btn-icon">🧂</span>
-                <span>
-                  <div className="btn-label">Insumos</div>
-                  <div className="btn-desc">Ver salidas y stock</div>
-                </span>
-              </button>
-              <button
-                className="menu-btn"
-                onClick={() =>
-                  cargarInsumosBebidasDelDia("bebidas", inventarioDiaPeriodo)
-                }
-                style={{
-                  background:
-                    inventarioDiaTipo === "bebidas"
-                      ? "linear-gradient(135deg, #dbeafe, #bfdbfe)"
-                      : "linear-gradient(135deg, #f8fafc, #f1f5f9)",
-                  color:
-                    inventarioDiaTipo === "bebidas" ? "#1d4ed8" : "#475569",
-                  border: "1px solid #cbd5e1",
-                  padding: "10px 14px",
-                  flex: 1,
-                  minWidth: 180,
-                }}
-              >
-                <span className="btn-icon">🥤</span>
-                <span>
-                  <div className="btn-label">Bebidas</div>
-                  <div className="btn-desc">Ver salidas y stock</div>
-                </span>
-              </button>
-              <button
-                className="menu-btn"
-                onClick={() =>
-                  cargarInsumosBebidasDelDia(
-                    "piezas_pollo",
-                    inventarioDiaPeriodo,
-                  )
-                }
-                style={{
-                  background:
-                    inventarioDiaTipo === "piezas_pollo"
-                      ? "linear-gradient(135deg, #ffedd5, #fed7aa)"
-                      : "linear-gradient(135deg, #f8fafc, #f1f5f9)",
-                  color:
-                    inventarioDiaTipo === "piezas_pollo"
-                      ? "#9a3412"
-                      : "#475569",
-                  border: "1px solid #cbd5e1",
-                  padding: "10px 14px",
-                  flex: 1,
-                  minWidth: 180,
-                }}
-              >
-                <span className="btn-icon">🍗</span>
-                <span>
-                  <div className="btn-label">Piezas de pollo</div>
-                  <div className="btn-desc">Piezas vendidas y stock</div>
-                </span>
-              </button>
-            </div>
-
-            <div
-              style={{
-                border: "1px solid #e2e8f0",
-                borderRadius: 10,
-                overflow: "hidden",
-              }}
+              onClick={() => setShowInsumosBebidasDiaModal(false)}
             >
               <div
+                onClick={(e) => e.stopPropagation()}
                 style={{
-                  padding: "10px 12px",
-                  background: "#f8fafc",
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  gap: 8,
-                  flexWrap: "wrap",
+                  background: "#fff",
+                  color: "#0f172a",
+                  borderRadius: 14,
+                  width: "92%",
+                  maxWidth: 760,
+                  maxHeight: "88vh",
+                  overflow: "auto",
+                  padding: 16,
                 }}
               >
-                <strong>
-                  {inventarioDiaTipo === "insumos"
-                    ? "🧂 Insumos"
-                    : inventarioDiaTipo === "bebidas"
-                      ? "🥤 Bebidas"
-                      : "🍗 Piezas de pollo"}{" "}
-                  · {inventarioDiaFecha || "Hoy"}
-                </strong>
-                <button
-                  className="inventory-btn primary"
-                  onClick={imprimirListaInsumosBebidasDia}
-                  disabled={inventarioDiaRows.length === 0}
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginBottom: 12,
+                  }}
                 >
-                  🖨 Imprimir ticket
-                </button>
-              </div>
+                  <div>
+                    <h3 style={{ margin: 0 }}>📦 Insumos y bebidas del día</h3>
+                    <p
+                      style={{
+                        margin: "4px 0 0",
+                        color: "#64748b",
+                        fontSize: 12,
+                      }}
+                    >
+                      Salidas y stock calculado por rango (Entradas - Salidas)
+                    </p>
+                  </div>
+                  <button
+                    className="inventory-btn secondary"
+                    onClick={() => setShowInsumosBebidasDiaModal(false)}
+                  >
+                    ✕
+                  </button>
+                </div>
 
-              {inventarioDiaLoading ? (
                 <div
-                  style={{ padding: 22, color: "#64748b", textAlign: "center" }}
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    flexWrap: "wrap",
+                    marginBottom: 12,
+                  }}
                 >
-                  Cargando lista…
+                  {(
+                    [
+                      ["hoy", "Hoy"],
+                      ["semana", "Semana"],
+                      ["mes", "Mes"],
+                      ["anio", "Año"],
+                    ] as const
+                  ).map(([periodo, label]) => (
+                    <button
+                      key={periodo}
+                      className="inventory-btn secondary"
+                      onClick={() =>
+                        cargarInsumosBebidasDelDia(inventarioDiaTipo, periodo)
+                      }
+                      style={{
+                        background:
+                          inventarioDiaPeriodo === periodo
+                            ? "#0f172a"
+                            : "#f8fafc",
+                        color:
+                          inventarioDiaPeriodo === periodo ? "#fff" : "#334155",
+                        border: "1px solid #cbd5e1",
+                        minWidth: 94,
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
                 </div>
-              ) : inventarioDiaRows.length === 0 ? (
+
                 <div
-                  style={{ padding: 22, color: "#64748b", textAlign: "center" }}
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    flexWrap: "wrap",
+                    marginBottom: 12,
+                  }}
                 >
-                  No hay salidas de inventario para esta lista en este rango.
-                </div>
-              ) : (
-                <div>
-                  <table
-                    className="inventory-table"
+                  <button
+                    className="menu-btn"
+                    onClick={() =>
+                      cargarInsumosBebidasDelDia(
+                        "insumos",
+                        inventarioDiaPeriodo,
+                      )
+                    }
                     style={{
-                      width: "100%",
-                      borderCollapse: "collapse",
-                      tableLayout: "fixed",
-                      fontSize: 13,
+                      background:
+                        inventarioDiaTipo === "insumos"
+                          ? "linear-gradient(135deg, #dcfce7, #bbf7d0)"
+                          : "linear-gradient(135deg, #f8fafc, #f1f5f9)",
+                      color:
+                        inventarioDiaTipo === "insumos" ? "#166534" : "#475569",
+                      border: "1px solid #cbd5e1",
+                      padding: "10px 14px",
+                      flex: 1,
+                      minWidth: 180,
                     }}
                   >
-                    <thead>
-                      <tr>
-                        <th
+                    <span className="btn-icon">🧂</span>
+                    <span>
+                      <div className="btn-label">Insumos</div>
+                      <div className="btn-desc">Ver salidas y stock</div>
+                    </span>
+                  </button>
+                  <button
+                    className="menu-btn"
+                    onClick={() =>
+                      cargarInsumosBebidasDelDia(
+                        "bebidas",
+                        inventarioDiaPeriodo,
+                      )
+                    }
+                    style={{
+                      background:
+                        inventarioDiaTipo === "bebidas"
+                          ? "linear-gradient(135deg, #dbeafe, #bfdbfe)"
+                          : "linear-gradient(135deg, #f8fafc, #f1f5f9)",
+                      color:
+                        inventarioDiaTipo === "bebidas" ? "#1d4ed8" : "#475569",
+                      border: "1px solid #cbd5e1",
+                      padding: "10px 14px",
+                      flex: 1,
+                      minWidth: 180,
+                    }}
+                  >
+                    <span className="btn-icon">🥤</span>
+                    <span>
+                      <div className="btn-label">Bebidas</div>
+                      <div className="btn-desc">Ver salidas y stock</div>
+                    </span>
+                  </button>
+                  <button
+                    className="menu-btn"
+                    onClick={() =>
+                      cargarInsumosBebidasDelDia(
+                        "piezas_pollo",
+                        inventarioDiaPeriodo,
+                      )
+                    }
+                    style={{
+                      background:
+                        inventarioDiaTipo === "piezas_pollo"
+                          ? "linear-gradient(135deg, #ffedd5, #fed7aa)"
+                          : "linear-gradient(135deg, #f8fafc, #f1f5f9)",
+                      color:
+                        inventarioDiaTipo === "piezas_pollo"
+                          ? "#9a3412"
+                          : "#475569",
+                      border: "1px solid #cbd5e1",
+                      padding: "10px 14px",
+                      flex: 1,
+                      minWidth: 180,
+                    }}
+                  >
+                    <span className="btn-icon">🍗</span>
+                    <span>
+                      <div className="btn-label">Piezas de pollo</div>
+                      <div className="btn-desc">Piezas vendidas y stock</div>
+                    </span>
+                  </button>
+                </div>
+
+                <div
+                  style={{
+                    border: "1px solid #e2e8f0",
+                    borderRadius: 10,
+                    overflow: "hidden",
+                  }}
+                >
+                  <div
+                    style={{
+                      padding: "10px 12px",
+                      background: "#f8fafc",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: 8,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <strong>
+                      {inventarioDiaTipo === "insumos"
+                        ? "🧂 Insumos"
+                        : inventarioDiaTipo === "bebidas"
+                          ? "🥤 Bebidas"
+                          : "🍗 Piezas de pollo"}{" "}
+                      · {inventarioDiaFecha || "Hoy"}
+                    </strong>
+                    <button
+                      className="inventory-btn primary"
+                      onClick={imprimirListaInsumosBebidasDia}
+                      disabled={inventarioDiaRows.length === 0}
+                    >
+                      🖨 Imprimir ticket
+                    </button>
+                  </div>
+
+                  {inventarioDiaLoading ? (
+                    <div
+                      style={{
+                        padding: 22,
+                        color: "#64748b",
+                        textAlign: "center",
+                      }}
+                    >
+                      Cargando lista…
+                    </div>
+                  ) : inventarioDiaRows.length === 0 ? (
+                    <div
+                      style={{
+                        padding: 22,
+                        color: "#64748b",
+                        textAlign: "center",
+                      }}
+                    >
+                      No hay salidas de inventario para esta lista en este
+                      rango.
+                    </div>
+                  ) : (
+                    <div>
+                      <table
+                        className="inventory-table"
+                        style={{
+                          width: "100%",
+                          borderCollapse: "collapse",
+                          tableLayout: "fixed",
+                          fontSize: 13,
+                        }}
+                      >
+                        <thead>
+                          <tr>
+                            <th
+                              style={{
+                                border: "1px solid #cbd5e1",
+                                background: "#f8fafc",
+                                padding: "9px 8px",
+                                textAlign: "left",
+                                width:
+                                  inventarioDiaTipo === "piezas_pollo" ||
+                                  inventarioDiaTipo === "bebidas"
+                                    ? "36%"
+                                    : "58%",
+                              }}
+                            >
+                              Nombre
+                            </th>
+                            {inventarioDiaTipo === "piezas_pollo" ||
+                            inventarioDiaTipo === "bebidas" ? (
+                              <>
+                                <th
+                                  style={{
+                                    border: "1px solid #cbd5e1",
+                                    background: "#f8fafc",
+                                    padding: "9px 8px",
+                                    textAlign: "right",
+                                    width: "16%",
+                                  }}
+                                >
+                                  {inventarioDiaPeriodo === "hoy"
+                                    ? "Stock al inicio del día"
+                                    : inventarioDiaPeriodo === "semana"
+                                      ? "Stock inicio semana"
+                                      : inventarioDiaPeriodo === "mes"
+                                        ? "Stock inicio mes"
+                                        : "Stock inicio año"}
+                                </th>
+                                <th
+                                  style={{
+                                    border: "1px solid #cbd5e1",
+                                    background: "#f8fafc",
+                                    padding: "9px 8px",
+                                    textAlign: "right",
+                                    width: "16%",
+                                  }}
+                                >
+                                  {inventarioDiaPeriodo === "hoy"
+                                    ? "Ingreso del día"
+                                    : inventarioDiaPeriodo === "semana"
+                                      ? "Ingreso semana"
+                                      : inventarioDiaPeriodo === "mes"
+                                        ? "Ingreso del mes"
+                                        : "Ingreso del año"}
+                                </th>
+                                <th
+                                  style={{
+                                    border: "1px solid #cbd5e1",
+                                    background: "#f8fafc",
+                                    padding: "9px 8px",
+                                    textAlign: "right",
+                                    width: "16%",
+                                  }}
+                                >
+                                  {inventarioDiaPeriodo === "hoy"
+                                    ? inventarioDiaTipo === "bebidas"
+                                      ? "Salida del día"
+                                      : "Venta del día"
+                                    : inventarioDiaPeriodo === "semana"
+                                      ? inventarioDiaTipo === "bebidas"
+                                        ? "Salida semana"
+                                        : "Venta de la semana"
+                                      : inventarioDiaPeriodo === "mes"
+                                        ? inventarioDiaTipo === "bebidas"
+                                          ? "Salida del mes"
+                                          : "Venta del mes"
+                                        : inventarioDiaTipo === "bebidas"
+                                          ? "Salida del año"
+                                          : "Venta del año"}
+                                </th>
+                                <th
+                                  style={{
+                                    border: "1px solid #cbd5e1",
+                                    background: "#f8fafc",
+                                    padding: "9px 8px",
+                                    textAlign: "right",
+                                    width: "16%",
+                                  }}
+                                >
+                                  Stock actual
+                                </th>
+                              </>
+                            ) : (
+                              <>
+                                <th
+                                  style={{
+                                    border: "1px solid #cbd5e1",
+                                    background: "#f8fafc",
+                                    padding: "9px 8px",
+                                    textAlign: "right",
+                                    width: "21%",
+                                  }}
+                                >
+                                  {inventarioDiaPeriodo === "hoy"
+                                    ? "Vendido hoy"
+                                    : inventarioDiaPeriodo === "semana"
+                                      ? "Vendido semana"
+                                      : inventarioDiaPeriodo === "mes"
+                                        ? "Vendido mes"
+                                        : "Vendido año"}
+                                </th>
+                                <th
+                                  style={{
+                                    border: "1px solid #cbd5e1",
+                                    background: "#f8fafc",
+                                    padding: "9px 8px",
+                                    textAlign: "right",
+                                    width: "21%",
+                                  }}
+                                >
+                                  Stock (E-S)
+                                </th>
+                              </>
+                            )}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {inventarioDiaRows.map((row) => (
+                            <tr key={row.id}>
+                              <td
+                                style={{
+                                  border: "1px solid #e2e8f0",
+                                  padding: "8px",
+                                  verticalAlign: "top",
+                                }}
+                              >
+                                {row.nombre}
+                              </td>
+                              {inventarioDiaTipo === "piezas_pollo" ||
+                              inventarioDiaTipo === "bebidas" ? (
+                                <>
+                                  <td
+                                    style={{
+                                      border: "1px solid #e2e8f0",
+                                      padding: "8px",
+                                      textAlign: "right",
+                                      color: "#0f172a",
+                                      fontVariantNumeric: "tabular-nums",
+                                    }}
+                                  >
+                                    {Number(row.stock_anterior ?? 0).toFixed(2)}
+                                  </td>
+                                  <td
+                                    style={{
+                                      border: "1px solid #e2e8f0",
+                                      padding: "8px",
+                                      textAlign: "right",
+                                      color: "#166534",
+                                      fontWeight: 700,
+                                      fontVariantNumeric: "tabular-nums",
+                                    }}
+                                  >
+                                    {Number(row.ingreso_dia ?? 0).toFixed(2)}
+                                  </td>
+                                  <td
+                                    style={{
+                                      border: "1px solid #e2e8f0",
+                                      padding: "8px",
+                                      textAlign: "right",
+                                      color: "#dc2626",
+                                      fontWeight: 700,
+                                      fontVariantNumeric: "tabular-nums",
+                                    }}
+                                  >
+                                    {Number(
+                                      row.venta_dia ?? row.vendido ?? 0,
+                                    ).toFixed(2)}
+                                  </td>
+                                  <td
+                                    style={{
+                                      border: "1px solid #e2e8f0",
+                                      padding: "8px",
+                                      textAlign: "right",
+                                      color: "#0f172a",
+                                      fontWeight: 700,
+                                      fontVariantNumeric: "tabular-nums",
+                                    }}
+                                  >
+                                    {Number(
+                                      row.stock_actual ?? row.stock ?? 0,
+                                    ).toFixed(2)}
+                                  </td>
+                                </>
+                              ) : (
+                                <>
+                                  <td
+                                    style={{
+                                      border: "1px solid #e2e8f0",
+                                      padding: "8px",
+                                      textAlign: "right",
+                                      color: "#dc2626",
+                                      fontWeight: 700,
+                                      fontVariantNumeric: "tabular-nums",
+                                    }}
+                                  >
+                                    {row.vendido.toFixed(2)}
+                                  </td>
+                                  <td
+                                    style={{
+                                      border: "1px solid #e2e8f0",
+                                      padding: "8px",
+                                      textAlign: "right",
+                                      color: "#0f172a",
+                                      fontVariantNumeric: "tabular-nums",
+                                    }}
+                                  >
+                                    {row.stock.toFixed(2)}
+                                  </td>
+                                </>
+                              )}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+
+                      {inventarioDiaTipo === "piezas_pollo" && (
+                        <div
                           style={{
-                            border: "1px solid #cbd5e1",
-                            background: "#f8fafc",
-                            padding: "9px 8px",
-                            textAlign: "left",
-                            width:
-                              inventarioDiaTipo === "piezas_pollo" ||
-                              inventarioDiaTipo === "bebidas"
-                                ? "36%"
-                                : "58%",
+                            marginTop: 12,
+                            borderTop: "1px solid #e2e8f0",
+                            paddingTop: 12,
                           }}
                         >
-                          Nombre
-                        </th>
-                        {inventarioDiaTipo === "piezas_pollo" ||
-                        inventarioDiaTipo === "bebidas" ? (
-                          <>
-                            <th
-                              style={{
-                                border: "1px solid #cbd5e1",
-                                background: "#f8fafc",
-                                padding: "9px 8px",
-                                textAlign: "right",
-                                width: "16%",
-                              }}
-                            >
-                              {inventarioDiaPeriodo === "hoy"
-                                ? "Stock al inicio del día"
-                                : inventarioDiaPeriodo === "semana"
-                                  ? "Stock inicio semana"
-                                  : inventarioDiaPeriodo === "mes"
-                                    ? "Stock inicio mes"
-                                    : "Stock inicio año"}
-                            </th>
-                            <th
-                              style={{
-                                border: "1px solid #cbd5e1",
-                                background: "#f8fafc",
-                                padding: "9px 8px",
-                                textAlign: "right",
-                                width: "16%",
-                              }}
-                            >
-                              {inventarioDiaPeriodo === "hoy"
-                                ? "Ingreso del día"
-                                : inventarioDiaPeriodo === "semana"
-                                  ? "Ingreso semana"
-                                  : inventarioDiaPeriodo === "mes"
-                                    ? "Ingreso del mes"
-                                    : "Ingreso del año"}
-                            </th>
-                            <th
-                              style={{
-                                border: "1px solid #cbd5e1",
-                                background: "#f8fafc",
-                                padding: "9px 8px",
-                                textAlign: "right",
-                                width: "16%",
-                              }}
-                            >
-                              {inventarioDiaPeriodo === "hoy"
-                                ? inventarioDiaTipo === "bebidas"
-                                  ? "Salida del día"
-                                  : "Venta del día"
-                                : inventarioDiaPeriodo === "semana"
-                                  ? inventarioDiaTipo === "bebidas"
-                                    ? "Salida semana"
-                                    : "Venta de la semana"
-                                  : inventarioDiaPeriodo === "mes"
-                                    ? inventarioDiaTipo === "bebidas"
-                                      ? "Salida del mes"
-                                      : "Venta del mes"
-                                    : inventarioDiaTipo === "bebidas"
-                                      ? "Salida del año"
-                                      : "Venta del año"}
-                            </th>
-                            <th
-                              style={{
-                                border: "1px solid #cbd5e1",
-                                background: "#f8fafc",
-                                padding: "9px 8px",
-                                textAlign: "right",
-                                width: "16%",
-                              }}
-                            >
-                              Stock actual
-                            </th>
-                          </>
-                        ) : (
-                          <>
-                            <th
-                              style={{
-                                border: "1px solid #cbd5e1",
-                                background: "#f8fafc",
-                                padding: "9px 8px",
-                                textAlign: "right",
-                                width: "21%",
-                              }}
-                            >
-                              {inventarioDiaPeriodo === "hoy"
-                                ? "Vendido hoy"
-                                : inventarioDiaPeriodo === "semana"
-                                  ? "Vendido semana"
-                                  : inventarioDiaPeriodo === "mes"
-                                    ? "Vendido mes"
-                                    : "Vendido año"}
-                            </th>
-                            <th
-                              style={{
-                                border: "1px solid #cbd5e1",
-                                background: "#f8fafc",
-                                padding: "9px 8px",
-                                textAlign: "right",
-                                width: "21%",
-                              }}
-                            >
-                              Stock (E-S)
-                            </th>
-                          </>
-                        )}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {inventarioDiaRows.map((row) => (
-                        <tr key={row.id}>
-                          <td
+                          <div
                             style={{
-                              border: "1px solid #e2e8f0",
-                              padding: "8px",
-                              verticalAlign: "top",
+                              fontWeight: 700,
+                              marginBottom: 8,
+                              color: "#7c2d12",
                             }}
                           >
-                            {row.nombre}
-                          </td>
-                          {inventarioDiaTipo === "piezas_pollo" ||
-                          inventarioDiaTipo === "bebidas" ? (
-                            <>
-                              <td
-                                style={{
-                                  border: "1px solid #e2e8f0",
-                                  padding: "8px",
-                                  textAlign: "right",
-                                  color: "#0f172a",
-                                  fontVariantNumeric: "tabular-nums",
-                                }}
-                              >
-                                {Number(row.stock_anterior ?? 0).toFixed(2)}
-                              </td>
-                              <td
-                                style={{
-                                  border: "1px solid #e2e8f0",
-                                  padding: "8px",
-                                  textAlign: "right",
-                                  color: "#166534",
-                                  fontWeight: 700,
-                                  fontVariantNumeric: "tabular-nums",
-                                }}
-                              >
-                                {Number(row.ingreso_dia ?? 0).toFixed(2)}
-                              </td>
-                              <td
-                                style={{
-                                  border: "1px solid #e2e8f0",
-                                  padding: "8px",
-                                  textAlign: "right",
-                                  color: "#dc2626",
-                                  fontWeight: 700,
-                                  fontVariantNumeric: "tabular-nums",
-                                }}
-                              >
-                                {Number(
-                                  row.venta_dia ?? row.vendido ?? 0,
-                                ).toFixed(2)}
-                              </td>
-                              <td
-                                style={{
-                                  border: "1px solid #e2e8f0",
-                                  padding: "8px",
-                                  textAlign: "right",
-                                  color: "#0f172a",
-                                  fontWeight: 700,
-                                  fontVariantNumeric: "tabular-nums",
-                                }}
-                              >
-                                {Number(
-                                  row.stock_actual ?? row.stock ?? 0,
-                                ).toFixed(2)}
-                              </td>
-                            </>
+                            Detalle de salidas por ventas de piezas
+                          </div>
+
+                          {inventarioDiaPiezasDetalleRows.length === 0 ? (
+                            <div
+                              style={{
+                                padding: "10px 12px",
+                                border: "1px dashed #cbd5e1",
+                                borderRadius: 8,
+                                color: "#64748b",
+                                fontSize: 12,
+                              }}
+                            >
+                              No hay detalle de productos para este rango.
+                            </div>
                           ) : (
                             <>
-                              <td
+                              <table
                                 style={{
-                                  border: "1px solid #e2e8f0",
-                                  padding: "8px",
-                                  textAlign: "right",
-                                  color: "#dc2626",
-                                  fontWeight: 700,
-                                  fontVariantNumeric: "tabular-nums",
+                                  width: "100%",
+                                  borderCollapse: "collapse",
+                                  tableLayout: "fixed",
+                                  fontSize: 13,
+                                  marginBottom: 10,
                                 }}
                               >
-                                {row.vendido.toFixed(2)}
-                              </td>
-                              <td
+                                <thead>
+                                  <tr>
+                                    <th
+                                      style={{
+                                        border: "1px solid #cbd5e1",
+                                        background: "#fff7ed",
+                                        padding: "8px",
+                                        textAlign: "left",
+                                        width: "44%",
+                                      }}
+                                    >
+                                      Producto
+                                    </th>
+                                    <th
+                                      style={{
+                                        border: "1px solid #cbd5e1",
+                                        background: "#fff7ed",
+                                        padding: "8px",
+                                        textAlign: "right",
+                                        width: "18%",
+                                      }}
+                                    >
+                                      Cant. vendida
+                                    </th>
+                                    <th
+                                      style={{
+                                        border: "1px solid #cbd5e1",
+                                        background: "#fff7ed",
+                                        padding: "8px",
+                                        textAlign: "right",
+                                        width: "18%",
+                                      }}
+                                    >
+                                      Piezas / prod.
+                                    </th>
+                                    <th
+                                      style={{
+                                        border: "1px solid #cbd5e1",
+                                        background: "#fff7ed",
+                                        padding: "8px",
+                                        textAlign: "right",
+                                        width: "20%",
+                                      }}
+                                    >
+                                      Piezas totales
+                                    </th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {inventarioDiaPiezasDetalleRows.map(
+                                    (row, idx) => (
+                                      <tr key={`${row.producto_nombre}-${idx}`}>
+                                        <td
+                                          style={{
+                                            border: "1px solid #e2e8f0",
+                                            padding: "8px",
+                                          }}
+                                        >
+                                          {row.producto_nombre}
+                                        </td>
+                                        <td
+                                          style={{
+                                            border: "1px solid #e2e8f0",
+                                            padding: "8px",
+                                            textAlign: "right",
+                                            fontVariantNumeric: "tabular-nums",
+                                          }}
+                                        >
+                                          {Number(
+                                            row.cantidad_vendida || 0,
+                                          ).toFixed(2)}
+                                        </td>
+                                        <td
+                                          style={{
+                                            border: "1px solid #e2e8f0",
+                                            padding: "8px",
+                                            textAlign: "right",
+                                            fontVariantNumeric: "tabular-nums",
+                                          }}
+                                        >
+                                          {Number(
+                                            row.piezas_por_producto || 0,
+                                          ).toFixed(2)}
+                                        </td>
+                                        <td
+                                          style={{
+                                            border: "1px solid #e2e8f0",
+                                            padding: "8px",
+                                            textAlign: "right",
+                                            fontWeight: 700,
+                                            color: "#7c2d12",
+                                            fontVariantNumeric: "tabular-nums",
+                                          }}
+                                        >
+                                          {Number(
+                                            row.piezas_totales_producto || 0,
+                                          ).toFixed(2)}
+                                        </td>
+                                      </tr>
+                                    ),
+                                  )}
+                                </tbody>
+                              </table>
+
+                              <div
                                 style={{
-                                  border: "1px solid #e2e8f0",
-                                  padding: "8px",
-                                  textAlign: "right",
-                                  color: "#0f172a",
-                                  fontVariantNumeric: "tabular-nums",
+                                  display: "grid",
+                                  gridTemplateColumns:
+                                    "repeat(auto-fit, minmax(170px, 1fr))",
+                                  gap: 8,
                                 }}
                               >
-                                {row.stock.toFixed(2)}
-                              </td>
+                                <div
+                                  style={{
+                                    border: "1px solid #e2e8f0",
+                                    borderRadius: 8,
+                                    padding: "8px 10px",
+                                    background: "#f8fafc",
+                                  }}
+                                >
+                                  <div
+                                    style={{ fontSize: 11, color: "#64748b" }}
+                                  >
+                                    Total cantidad vendida
+                                  </div>
+                                  <div
+                                    style={{
+                                      fontWeight: 700,
+                                      color: "#0f172a",
+                                    }}
+                                  >
+                                    {totalCantidadVendidaPiezas.toFixed(2)}
+                                  </div>
+                                </div>
+                                <div
+                                  style={{
+                                    border: "1px solid #e2e8f0",
+                                    borderRadius: 8,
+                                    padding: "8px 10px",
+                                    background: "#fff7ed",
+                                  }}
+                                >
+                                  <div
+                                    style={{ fontSize: 11, color: "#9a3412" }}
+                                  >
+                                    Total piezas de pollo
+                                  </div>
+                                  <div
+                                    style={{
+                                      fontWeight: 700,
+                                      color: "#7c2d12",
+                                    }}
+                                  >
+                                    {totalPiezasVendidas.toFixed(2)}
+                                  </div>
+                                </div>
+                                <div
+                                  style={{
+                                    border: "1px solid #fecaca",
+                                    borderRadius: 8,
+                                    padding: "8px 10px",
+                                    background: "#fef2f2",
+                                  }}
+                                >
+                                  <div
+                                    style={{ fontSize: 11, color: "#991b1b" }}
+                                  >
+                                    Salidas por merma
+                                  </div>
+                                  <div
+                                    style={{
+                                      fontWeight: 700,
+                                      color: "#b91c1c",
+                                    }}
+                                  >
+                                    {totalMermaPiezas.toFixed(2)}
+                                  </div>
+                                </div>
+                              </div>
                             </>
                           )}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
             </div>
-          </div>
-        </div>
-      )}
+          );
+        })()}
 
       {/* Modal Historial de Ventas */}
       {showHistorialVentas &&
