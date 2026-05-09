@@ -26,6 +26,17 @@ interface FilaInventario {
   stockActual: number;
 }
 
+type SerieDimension = "dia" | "semana" | "mes";
+
+interface PiezasSerieTiempoRow {
+  dimension: SerieDimension;
+  bucket_key: string;
+  etiqueta: string;
+  orden: number;
+  ventas_piezas: number;
+  merma_piezas: number;
+}
+
 function numberValue(value: number | string | null | undefined) {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -41,6 +52,65 @@ function normalizeText(value: unknown) {
 
 function normalizeMovType(value: unknown) {
   return normalizeText(value).replace(/[\s-]+/g, "_");
+}
+
+function ymdTegucigalpa(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Tegucigalpa",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const year = parts.find((p) => p.type === "year")?.value || "0000";
+  const month = parts.find((p) => p.type === "month")?.value || "01";
+  const day = parts.find((p) => p.type === "day")?.value || "01";
+  return `${year}-${month}-${day}`;
+}
+
+function parseYmd(ymd: string) {
+  const [y, m, d] = String(ymd || "")
+    .split("-")
+    .map((v) => Number(v));
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d);
+}
+
+function formatYmd(date: Date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function resolverPeriodoVistaPiezas(
+  fechaDesde: string,
+  fechaHasta: string,
+): "dia" | "semana" | "mes" | "anio" | null {
+  if (!fechaDesde || !fechaHasta) return null;
+  const hoy = parseYmd(ymdTegucigalpa());
+  const desde = parseYmd(fechaDesde);
+  const hasta = parseYmd(fechaHasta);
+  if (!hoy || !desde || !hasta) return null;
+
+  const hoyYmd = formatYmd(hoy);
+  if (fechaDesde === hoyYmd && fechaHasta === hoyYmd) return "dia";
+
+  const inicioSemana = new Date(hoy);
+  const day = inicioSemana.getDay();
+  const delta = day === 0 ? 6 : day - 1;
+  inicioSemana.setDate(inicioSemana.getDate() - delta);
+  const inicioSemanaYmd = formatYmd(inicioSemana);
+  if (fechaDesde === inicioSemanaYmd && fechaHasta === hoyYmd) return "semana";
+
+  const inicioMes = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
+  const inicioMesYmd = formatYmd(inicioMes);
+  if (fechaDesde === inicioMesYmd && fechaHasta === hoyYmd) return "mes";
+
+  const inicioAnio = new Date(hoy.getFullYear(), 0, 1);
+  const inicioAnioYmd = formatYmd(inicioAnio);
+  if (fechaDesde === inicioAnioYmd && fechaHasta === hoyYmd) return "anio";
+
+  return null;
 }
 
 export default function EntradasSalidasInventarioView({
@@ -61,6 +131,9 @@ export default function EntradasSalidasInventarioView({
     {},
   );
   const [masivoGuardando, setMasivoGuardando] = useState(false);
+  const [piezasSeries, setPiezasSeries] = useState<PiezasSerieTiempoRow[]>([]);
+  const [piezasSeriesLoading, setPiezasSeriesLoading] = useState(false);
+  const [piezasSeriesError, setPiezasSeriesError] = useState("");
 
   // Toma de inventario
   interface TomaFila {
@@ -74,6 +147,39 @@ export default function EntradasSalidasInventarioView({
   const [tomaConteos, setTomaConteos] = useState<Record<string, string>>({});
   const [tomaGuardando, setTomaGuardando] = useState(false);
   const [tomaExito, setTomaExito] = useState(false);
+
+  const cargarSeriesPiezas = async () => {
+    setPiezasSeriesLoading(true);
+    setPiezasSeriesError("");
+    try {
+      const { data, error: seriesError } = await supabase
+        .from("v_piezas_pollo_series_tiempo")
+        .select(
+          "dimension,bucket_key,etiqueta,orden,ventas_piezas,merma_piezas",
+        )
+        .order("orden", { ascending: true });
+
+      if (seriesError) throw seriesError;
+
+      const rows: PiezasSerieTiempoRow[] = (data || []).map((row: any) => ({
+        dimension: row.dimension,
+        bucket_key: String(row.bucket_key || ""),
+        etiqueta: String(row.etiqueta || ""),
+        orden: numberValue(row.orden),
+        ventas_piezas: numberValue(row.ventas_piezas),
+        merma_piezas: numberValue(row.merma_piezas),
+      }));
+
+      setPiezasSeries(rows);
+    } catch (e: any) {
+      setPiezasSeries([]);
+      setPiezasSeriesError(
+        e?.message || "No se pudo cargar la analítica de piezas de pollo.",
+      );
+    } finally {
+      setPiezasSeriesLoading(false);
+    }
+  };
 
   const cargarDatos = async () => {
     setLoading(true);
@@ -232,11 +338,57 @@ export default function EntradasSalidasInventarioView({
         })
         .filter((fila): fila is FilaInventario => Boolean(fila));
 
+      const periodoVista =
+        resolverPeriodoVistaPiezas(fechaDesde, fechaHasta) || "dia";
+      const { data: piezasStock, error: piezasStockError } = await supabase
+        .from("v_piezas_pollo_stock_periodos")
+        .select(
+          "insumo_id,insumo_nombre,stock_anterior,ingreso_periodo,salida_periodo,stock_actual",
+        )
+        .eq("periodo", periodoVista)
+        .limit(1)
+        .maybeSingle();
+      if (piezasStockError) throw piezasStockError;
+
+      let filasCombinadas = [...filasInsumos, ...filasBebidas];
+
+      if (piezasStock) {
+        const piezaId = String(piezasStock.insumo_id || "");
+        const piezaNombre = String(
+          piezasStock.insumo_nombre || "Piezas de pollo",
+        );
+        const filaPiezasVista: FilaInventario = {
+          id: piezaId,
+          nombre: piezaNombre,
+          tipo: "Insumo",
+          stockAnterior: numberValue(piezasStock.stock_anterior),
+          ingresoPeriodo: numberValue(piezasStock.ingreso_periodo),
+          salidaPeriodo: numberValue(piezasStock.salida_periodo),
+          stockActual: numberValue(piezasStock.stock_actual),
+        };
+
+        const indexPieza = filasCombinadas.findIndex(
+          (fila) =>
+            fila.tipo === "Insumo" &&
+            normalizeText(fila.nombre) === "piezas de pollo",
+        );
+
+        if (indexPieza >= 0) {
+          filasCombinadas[indexPieza] = filaPiezasVista;
+        } else {
+          filasCombinadas = [...filasCombinadas, filaPiezasVista];
+        }
+      }
+
       setFilas(
-        [...filasInsumos, ...filasBebidas].sort((a, b) =>
+        filasCombinadas.sort((a, b) =>
           a.nombre.localeCompare(b.nombre, "es", { sensitivity: "base" }),
         ),
       );
+
+      if (filtroTipo === "piezas_pollo") {
+        await cargarSeriesPiezas();
+      }
     } catch (e: any) {
       setError(e?.message || "Error al cargar movimientos de inventario.");
       setFilas([]);
@@ -248,6 +400,91 @@ export default function EntradasSalidasInventarioView({
   useEffect(() => {
     cargarDatos();
   }, []);
+
+  useEffect(() => {
+    if (filtroTipo === "piezas_pollo") {
+      cargarSeriesPiezas();
+    }
+  }, [filtroTipo]);
+
+  const piezasSeriesPorDimension = useMemo(() => {
+    return {
+      dia: piezasSeries.filter((r) => r.dimension === "dia"),
+      semana: piezasSeries.filter((r) => r.dimension === "semana"),
+      mes: piezasSeries.filter((r) => r.dimension === "mes"),
+    };
+  }, [piezasSeries]);
+
+  const renderMiniBars = (
+    titulo: string,
+    data: PiezasSerieTiempoRow[],
+    campo: "ventas_piezas" | "merma_piezas",
+    color: string,
+  ) => {
+    const max = Math.max(1, ...data.map((item) => numberValue(item[campo])));
+
+    return (
+      <div
+        style={{
+          border: "1px solid #e5e7eb",
+          borderRadius: 12,
+          padding: 12,
+          background: "#fff",
+        }}
+      >
+        <h4 style={{ margin: "0 0 10px", color: "#111827", fontSize: 14 }}>
+          {titulo}
+        </h4>
+        {data.length === 0 ? (
+          <p style={{ margin: 0, color: "#6b7280", fontSize: 13 }}>
+            Sin datos.
+          </p>
+        ) : (
+          <div style={{ display: "grid", gap: 8 }}>
+            {data.map((item) => {
+              const valor = numberValue(item[campo]);
+              const porcentaje = Math.max(2, (valor / max) * 100);
+
+              return (
+                <div key={`${titulo}-${item.bucket_key}`}>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      marginBottom: 4,
+                      fontSize: 12,
+                      color: "#4b5563",
+                    }}
+                  >
+                    <span>{item.etiqueta}</span>
+                    <strong style={{ color: "#111827" }}>
+                      {valor.toFixed(2)}
+                    </strong>
+                  </div>
+                  <div
+                    style={{
+                      height: 10,
+                      borderRadius: 999,
+                      background: "#f3f4f6",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: `${porcentaje}%`,
+                        height: "100%",
+                        background: color,
+                      }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const filasFiltradas = useMemo(() => {
     const normalizeText = (value: string) =>
@@ -671,6 +908,103 @@ export default function EntradasSalidasInventarioView({
       <h2 style={{ margin: "0 0 12px", color: "#111827" }}>
         Entradas y salidas de inventario
       </h2>
+
+      {!loading && !error && filtroTipo === "piezas_pollo" && (
+        <div
+          style={{
+            marginBottom: 16,
+            background: "#f8fafc",
+            border: "1px solid #e2e8f0",
+            borderRadius: 14,
+            padding: 14,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: 10,
+              gap: 12,
+              flexWrap: "wrap",
+            }}
+          >
+            <h3 style={{ margin: 0, fontSize: 16, color: "#111827" }}>
+              📊 Analítica de piezas de pollo
+            </h3>
+            <span style={{ fontSize: 12, color: "#64748b" }}>
+              Fuente: vistas SQL (ventas y merma)
+            </span>
+          </div>
+
+          {piezasSeriesLoading ? (
+            <p style={{ margin: 0, color: "#475569", fontSize: 13 }}>
+              Cargando gráficas...
+            </p>
+          ) : piezasSeriesError ? (
+            <p style={{ margin: 0, color: "#b91c1c", fontSize: 13 }}>
+              {piezasSeriesError}
+            </p>
+          ) : (
+            <>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+                  gap: 12,
+                  marginBottom: 12,
+                }}
+              >
+                {renderMiniBars(
+                  "Ventas por día (últimos 7 días)",
+                  piezasSeriesPorDimension.dia,
+                  "ventas_piezas",
+                  "#16a34a",
+                )}
+                {renderMiniBars(
+                  "Ventas por semana (últimas 4 semanas)",
+                  piezasSeriesPorDimension.semana,
+                  "ventas_piezas",
+                  "#15803d",
+                )}
+                {renderMiniBars(
+                  "Ventas por mes (últimos 6 meses)",
+                  piezasSeriesPorDimension.mes,
+                  "ventas_piezas",
+                  "#166534",
+                )}
+              </div>
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+                  gap: 12,
+                }}
+              >
+                {renderMiniBars(
+                  "Merma por día (últimos 7 días)",
+                  piezasSeriesPorDimension.dia,
+                  "merma_piezas",
+                  "#dc2626",
+                )}
+                {renderMiniBars(
+                  "Merma por semana (últimas 4 semanas)",
+                  piezasSeriesPorDimension.semana,
+                  "merma_piezas",
+                  "#b91c1c",
+                )}
+                {renderMiniBars(
+                  "Merma por mes (últimos 6 meses)",
+                  piezasSeriesPorDimension.mes,
+                  "merma_piezas",
+                  "#991b1b",
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {loading && <p style={{ color: "#374151" }}>Cargando datos...</p>}
       {!loading && error && <p style={{ color: "#b91c1c" }}>{error}</p>}

@@ -1613,14 +1613,16 @@ export default function PuntoDeVentaView({
     // Tabla de detalle de piezas
     const filasDetalle = esPiezasPollo
       ? inventarioDiaPiezasDetalleRows
-          .map((r) => `
+          .map(
+            (r) => `
             <tr>
               <td style="padding:6px 4px;border-bottom:1px dashed #ddd;">${r.producto_nombre || "Producto"}</td>
               <td style="padding:6px 4px;border-bottom:1px dashed #ddd;text-align:right;">${r.cantidad_vendida?.toFixed(2) || "0.00"}</td>
               <td style="padding:6px 4px;border-bottom:1px dashed #ddd;text-align:right;">${r.piezas_por_producto?.toFixed(2) || "0.00"}</td>
               <td style="padding:6px 4px;border-bottom:1px dashed #ddd;text-align:right;">${r.piezas_totales_producto?.toFixed(2) || "0.00"}</td>
             </tr>
-          `)
+          `,
+          )
           .join("")
       : "";
 
@@ -3084,9 +3086,7 @@ export default function PuntoDeVentaView({
       };
       const { data: detalleDia, error: detalleError } = await supabase
         .from("v_piezas_pollo_detalle_ventas_periodos")
-        .select(
-          "total_piezas_vendidas_periodo,total_cantidad_vendida_periodo",
-        )
+        .select("total_piezas_vendidas_periodo,total_cantidad_vendida_periodo")
         .eq("periodo", "dia")
         .limit(1)
         .maybeSingle();
@@ -3109,7 +3109,9 @@ export default function PuntoDeVentaView({
         .maybeSingle();
 
       if (!stockError && stockDia) {
-        setPlatillosTurno(Math.max(0, num(stockDia.cantidad_productos_vendidos)));
+        setPlatillosTurno(
+          Math.max(0, num(stockDia.cantidad_productos_vendidos)),
+        );
         setPiezasPolloDia(Math.max(0, num(stockDia.venta_periodo)));
         return;
       }
