@@ -129,142 +129,36 @@ export default function RegistroCierreView({
       return resumenVacio;
     }
 
-    const { data: aperturaActual, error: aperturaError } = await supabase
-      .from("cierres")
+    const { data: resumenTurno, error: resumenError } = await supabase
+      .from("v_resumen_turnos")
       .select(
-        "id,cajero_id,caja,fecha,fecha_apertura,fecha_cierre,estado,fondo_fijo_registrado",
+        "apertura_id,cajero_id,nombre_cajero,caja,fecha_apertura,fecha_cierre,efectivo_bruto,efectivo_neto,cambio_devuelto,gastos,tarjeta,transferencia,dolares_usd,dolares_lps,total_ventas,platillos_vendidos,bebidas_vendidas,platillos_donados,bebidas_donadas,total_platillos,total_bebidas",
       )
       .eq("cajero_id", usuarioActual.id)
       .eq("caja", caja)
-      .eq("estado", "APERTURA")
       .order("fecha_apertura", { ascending: false })
-      .order("fecha", { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    if (aperturaError) throw aperturaError;
+    if (resumenError) throw resumenError;
 
-    if (!aperturaActual) {
+    if (!resumenTurno) {
       limpiarValoresSistema();
       return resumenVacio;
     }
 
-    const fechaInicio = aperturaActual.fecha_apertura ?? aperturaActual.fecha;
-    const fechaFin = aperturaActual.fecha_cierre ?? formatToHondurasLocal();
-
-    const parseTs = (fechaHora?: string | null, fecha?: string | null) => {
-      const raw =
-        (fechaHora && fechaHora.trim()) || (fecha && `${fecha} 00:00:00`) || "";
-      if (!raw) return 0;
-
-      // Si ya viene ISO con zona, usar parse directo
-      if (/Z$|[+\-]\d{2}:\d{2}$/.test(raw)) {
-        const tsDirect = Date.parse(raw);
-        return Number.isFinite(tsDirect) ? tsDirect : 0;
-      }
-
-      // Formato local Honduras (sin zona) => forzar -06:00
-      const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
-      const tsHonduras = Date.parse(`${normalized}-06:00`);
-      return Number.isFinite(tsHonduras) ? tsHonduras : 0;
-    };
-
-    const tsInicio = parseTs(fechaInicio, null);
-    const tsFin = parseTs(fechaFin, null);
-    const fechaInicioIso =
-      tsInicio > 0 ? new Date(tsInicio).toISOString() : null;
-    const fechaFinIso = tsFin > 0 ? new Date(tsFin).toISOString() : null;
-
-    let ventasQuery = supabase
-      .from("ventas")
-      .select(
-        "fecha_hora,tipo,es_donacion,productos,efectivo,tarjeta,transferencia,dolares,dolares_usd,cambio,total,caja",
-      )
-      .eq("cajero_id", usuarioActual.id)
-      .eq("caja", caja)
-      .neq("tipo", "CREDITO");
-
-    if (fechaInicioIso)
-      ventasQuery = ventasQuery.gte("fecha_hora", fechaInicioIso);
-    if (fechaFinIso) ventasQuery = ventasQuery.lte("fecha_hora", fechaFinIso);
-
-    const { data: ventasData, error: ventasError } = await ventasQuery;
-
-    if (ventasError) throw ventasError;
-
-    const { data: gastosData, error: gastosError } = await supabase
-      .from("gastos")
-      .select("monto,fecha,fecha_hora,caja")
-      .eq("cajero_id", usuarioActual.id)
-      .eq("caja", caja);
-
-    if (gastosError) throw gastosError;
-
-    const ventasTurno = (ventasData || []).filter((venta: any) => {
-      const ts = parseTs(venta.fecha_hora, null);
-      return ts >= tsInicio && ts <= tsFin;
-    });
-
-    const ventasNormales = ventasTurno.filter(
-      (venta: any) => venta.es_donacion !== true,
-    );
-
-    const gastosTurno = (gastosData || []).filter((gasto: any) => {
-      const ts = parseTs(gasto.fecha_hora, gasto.fecha);
-      return ts >= tsInicio && ts <= tsFin;
-    });
-
-    const sumar = (arr: any[], campo: string) =>
-      arr.reduce((acc, row) => acc + parseFloat(row?.[campo] ?? 0), 0);
-
-    const contarTipo = (arr: any[], tipo: string) => {
-      let count = 0;
-      arr.forEach((venta) => {
-        const factor = venta.tipo === "DEVOLUCION" ? -1 : 1;
-        try {
-          const productos =
-            typeof venta.productos === "string"
-              ? JSON.parse(venta.productos)
-              : (venta.productos ?? []);
-          productos.forEach((producto: any) => {
-            if ((producto.tipo ?? "").toLowerCase() === tipo.toLowerCase()) {
-              count +=
-                factor * parseInt(producto.cantidad ?? producto.qty ?? 1);
-            }
-          });
-        } catch {
-          // Ignorar ventas con JSON inválido
-        }
-      });
-      return count;
-    };
-
-    const fondoFijoDia = parseFloat(
-      aperturaActual.fondo_fijo_registrado || "0",
-    );
-    const efectivoBruto = sumar(ventasNormales as any[], "efectivo");
-    const cambioTotal = sumar(ventasNormales as any[], "cambio");
-    const gastosDia = gastosTurno.reduce(
-      (acc: number, gasto: any) => acc + parseFloat(gasto.monto ?? 0),
-      0,
-    );
-    const efectivoDia = Number(
-      (efectivoBruto - cambioTotal - gastosDia).toFixed(2),
-    );
-    const tarjetaDia = Number(
-      sumar(ventasNormales as any[], "tarjeta").toFixed(2),
-    );
-    const transferenciasDia = Number(
-      sumar(ventasNormales as any[], "transferencia").toFixed(2),
-    );
-    const dolaresDia = Number(
-      sumar(ventasNormales as any[], "dolares_usd").toFixed(2),
-    );
+    const fondoFijoDia = 0;
+    const gastosDia = Number(resumenTurno.gastos ?? 0);
+    const efectivoDia = Number(resumenTurno.efectivo_neto ?? 0);
+    const tarjetaDia = Number(resumenTurno.tarjeta ?? 0);
+    const transferenciasDia = Number(resumenTurno.transferencia ?? 0);
+    const dolaresDia = Number(resumenTurno.dolares_usd ?? 0);
+    const dolaresLps = Number(resumenTurno.dolares_lps ?? 0);
     const totalVentasDia = Number(
-      sumar(ventasNormales as any[], "total").toFixed(2),
+      (efectivoDia + tarjetaDia + transferenciasDia + dolaresLps).toFixed(2),
     );
-    const platillosDia = contarTipo(ventasNormales as any[], "comida");
-    const bebidasDia = contarTipo(ventasNormales as any[], "bebida");
+    const platillosDia = Number(resumenTurno.platillos_vendidos ?? 0);
+    const bebidasDia = Number(resumenTurno.bebidas_vendidas ?? 0);
 
     setEfectivoSistema(efectivoDia);
     setTarjetaSistema(tarjetaDia);
@@ -272,8 +166,7 @@ export default function RegistroCierreView({
     setDolaresSistema(dolaresDia);
     setGastosSistema(gastosDia);
     setTotalVentasSistema(totalVentasDia ?? 0);
-    const fa = aperturaActual.fecha_apertura ?? aperturaActual.fecha ?? "";
-    setFechaAperturaSistema(fa);
+    setFechaAperturaSistema(resumenTurno.fecha_apertura ?? "");
 
     return {
       fondoFijoDia,
@@ -285,7 +178,7 @@ export default function RegistroCierreView({
       platillosDia,
       bebidasDia,
       totalVentasDia,
-      fechaApertura: aperturaActual.fecha_apertura ?? aperturaActual.fecha,
+      fechaApertura: resumenTurno.fecha_apertura ?? "",
     };
   }
 
@@ -1331,7 +1224,7 @@ export default function RegistroCierreView({
                     letterSpacing: 1.2,
                   }}
                 >
-                  Total Ventas Brutas
+                  Total General
                 </span>
                 <span
                   style={{
