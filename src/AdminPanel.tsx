@@ -29,7 +29,8 @@ type ViewType =
   | "compras"
   | "planilla"
   | "costosOperativos"
-  | "estadoResultados";
+  | "estadoResultados"
+  | "reporteDevoluciones";
 
 const cards: {
   label: string;
@@ -86,6 +87,13 @@ const cards: {
     view: "resultados",
     color: "#c62828",
     subtitle: "Análisis de ventas",
+  },
+  {
+    label: "Reporte de Devoluciones",
+    icon: "🔁",
+    view: "reporteDevoluciones",
+    color: "#2b6cb0",
+    subtitle: "Devoluciones y notas de crédito",
   },
   {
     label: "Registro de Gastos",
@@ -181,7 +189,7 @@ const cards: {
 ];
 
 interface AdminPanelProps {
-  onSelect: (view: ViewType) => void;
+  onSelect: any;
   user: any;
 }
 
@@ -196,6 +204,7 @@ import ResultadosView from "./ResultadosView";
 import GastosView from "./GastosView";
 import FacturasEmitidasView from "./FacturasEmitidasView";
 import CierresAdminView from "./CierresAdminView";
+import ReporteDevolucionesView from "./ReporteDevolucionesView";
 import DatosNegocioView from "./DatosNegocioView";
 import GananciasNetasView from "./GananciasNetasView";
 import CreditosPendientesView from "./CreditosPendientesView";
@@ -1303,6 +1312,9 @@ const AdminPanel: FC<AdminPanelProps> = (props) => {
                 onBack={() => setCurrentView("menu")}
                 onVerFacturasEmitidas={() => setCurrentView("facturasEmitidas")}
               />
+            )}
+            {currentView === "reporteDevoluciones" && (
+              <ReporteDevolucionesView onBack={() => setCurrentView("resultados")} />
             )}
             {currentView === "gastos" && (
               <GastosView onBack={() => setCurrentView("menu")} />
